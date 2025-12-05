@@ -8,7 +8,7 @@ const bcrypt = require("bcryptjs");
 
 const AsteriskManager = require("asterisk-manager");
 const User = require("./models/User");
-const Message = require("./models/message");
+const Message = require("./models/Message");
 
 dotenv.config();
 const app = express();
@@ -20,6 +20,9 @@ connectDB();
 
 // Routes
 app.use("/api/auth", require("./routes/authRoutes"));
+app.use("/api/admin", require("./routes/adminRoutes"));
+app.use("/api/calls", require("./routes/callRoutes"));
+app.use("/api/messages", require("./routes/messageRoutes"));
 
 // Test endpoint
 app.get("/", (req, res) => {
@@ -56,6 +59,19 @@ io.on("connection", (socket) => {
   console.log(`Agent ${agentId} connected`);
   socket.join(agentId);
 
+  // Handle Status Updates
+  socket.on("updateStatus", async ({ status }) => {
+    try {
+      // Update in DB
+      await User.findOneAndUpdate({ username: agentId }, { status });
+
+      // Broadcast to all clients
+      io.emit("agent:status_update", { username: agentId, status });
+    } catch (err) {
+      console.error("Status update error:", err);
+    }
+  });
+
   // Load previous messages for this agent
   Message.find({ $or: [{ from: agentId }, { to: agentId }] })
     .sort({ timestamp: 1 })
@@ -66,6 +82,7 @@ io.on("connection", (socket) => {
   // Listen for new messages
   socket.on("sendMessage", async ({ to, message }) => {
     try {
+      // Save to DB
       const newMsg = await Message.create({
         from: agentId,
         to,
@@ -75,66 +92,30 @@ io.on("connection", (socket) => {
 
       // Send via Socket.IO
       io.to(to).emit("receiveMessage", newMsg);
-      socket.emit("receiveMessage", newMsg);
+      socket.emit("receiveMessage", newMsg); // Send back to sender for confirmation
 
-      // Send via Asterisk
-      ami.action(
-        {
+      // Send via Asterisk (Optional/If configured)
+      if (process.env.AMI_HOST) {
+        ami.action({
           action: "MessageSend",
           to: `SIP/${to}`,
           from: agentId,
           message,
-        },
-        (err, response) => {
+        }, (err, response) => {
           if (err) console.log("AMI Error:", err.message);
-          else console.log("AMI MessageSend:", response);
-        }
-      );
+        });
+      }
     } catch (err) {
-      console.error(err);
+      console.error("Message save error:", err);
     }
   });
 
-  socket.on("disconnect", () => {
+  socket.on("disconnect", async () => {
     console.log(`Agent ${agentId} disconnected`);
+    // Optional: Auto-set to offline on disconnect
+    // await User.findOneAndUpdate({ username: agentId }, { status: "offline" });
+    // io.emit("agent:status_update", { username: agentId, status: "offline" });
   });
-});
-
-// --- Messaging REST API ---
-app.get("/api/messages/:agentId", async (req, res) => {
-  try {
-    const agentId = req.params.agentId;
-    const messages = await Message.find({
-      $or: [{ from: agentId }, { to: agentId }],
-    }).sort({ timestamp: 1 });
-
-    res.json(messages);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post("/api/message", async (req, res) => {
-  const { from, to, message } = req.body;
-  try {
-    const newMsg = await Message.create({ from, to, message });
-    
-    // Send via Asterisk
-    ami.action(
-      {
-        action: "MessageSend",
-        to: `SIP/${to}`,
-        from,
-        message,
-      },
-      (err, response) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ status: "sent", response, savedMessage: newMsg });
-      }
-    );
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
 });
 
 // Start server

@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import { io } from "socket.io-client";
 import api from "../services/api";
-import { Send, Paperclip, Smile } from "lucide-react"; // Optional: lucide-react icons
+import { Send, Paperclip, Smile, Search, MessageSquare, User } from "lucide-react";
 
-// Initialize socket outside component to prevent reconnecting on every render
+// Initialize socket
 const socket = io(import.meta.env.VITE_BACKEND_URL || "http://localhost:5000", {
   autoConnect: true,
   reconnection: true,
@@ -11,14 +12,36 @@ const socket = io(import.meta.env.VITE_BACKEND_URL || "http://localhost:5000", {
 });
 
 export default function Messaging() {
+  const [searchParams] = useSearchParams();
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState("");
   const [isTyping, setIsTyping] = useState(false);
+  const [conversations, setConversations] = useState([]);
+  const [selectedConversation, setSelectedConversation] = useState(null);
+  const [searchQuery, setSearchQuery] = useState("");
   const agentId = localStorage.getItem("username") || "Guest";
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
 
-  // Auto-scroll to bottom
+  // Connect socket with agentId
+  useEffect(() => {
+    if (agentId) {
+      socket.io.opts.query = { agentId };
+      socket.connect();
+    }
+    return () => {
+      socket.disconnect();
+    };
+  }, [agentId]);
+
+  // Check for agent param from dashboard
+  useEffect(() => {
+    const targetAgent = searchParams.get("agent");
+    if (targetAgent) {
+      setSelectedConversation(targetAgent);
+    }
+  }, [searchParams]);
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
@@ -27,58 +50,77 @@ export default function Messaging() {
     scrollToBottom();
   }, [messages]);
 
-  // Load chat history & setup socket
+  // Load conversations list
   useEffect(() => {
-    if (!agentId) return;
+    const fetchConversations = async () => {
+      try {
+        const res = await api.get(`/messages/conversations/${agentId}`);
+        setConversations(res.data || []);
+      } catch (err) {
+        console.error("Failed to fetch conversations", err);
+      }
+    };
+    fetchConversations();
+  }, [agentId, messages]); // Refresh when messages change
 
-    // Fetch previous messages
+  // Load messages for selected conversation
+  useEffect(() => {
+    if (!agentId || !selectedConversation) return;
+
     const fetchMessages = async () => {
       try {
-        const res = await api.get(`/messages/${agentId}`);
+        const res = await api.get(`/messages/${agentId}/${selectedConversation}`);
         setMessages(res.data || []);
       } catch (err) {
-        console.error("Failed to load messages:", err);
+        console.error("Failed to fetch messages", err);
       }
     };
 
     fetchMessages();
+    
+    // Listen for incoming messages
+    const handleReceiveMessage = (msg) => {
+      if (msg.from === selectedConversation || msg.to === selectedConversation) {
+        setMessages((prev) => {
+          // Prevent duplicates
+          if (prev.some(m => m._id === msg._id)) return prev;
+          return [...prev, msg];
+        });
+      }
+    };
 
-    // Join agent room
-    socket.emit("join", { agentId });
+    socket.on("receiveMessage", handleReceiveMessage);
 
-    // Listen for new messages
-    socket.on("receiveMessage", (msg) => {
-      setMessages((prev) => [...prev, msg]);
-    });
-
-    // Optional: typing indicators
     socket.on("typing", ({ from }) => {
-      if (from !== agentId) setIsTyping(true);
+      if (from === selectedConversation) setIsTyping(true);
     });
 
     socket.on("stopTyping", () => setIsTyping(false));
 
-    // Cleanup
     return () => {
-      socket.off("receiveMessage");
+      socket.off("receiveMessage", handleReceiveMessage);
       socket.off("typing");
       socket.off("stopTyping");
-      socket.emit("leave", { agentId });
     };
-  }, [agentId]);
+  }, [agentId, selectedConversation]);
 
   const handleSend = () => {
     const trimmedMessage = newMessage.trim();
-    if (!trimmedMessage) return;
+    if (!trimmedMessage || !selectedConversation) return;
 
     const messageData = {
       from: agentId,
-      to: "1002", // Make dynamic in real app
+      to: selectedConversation,
       message: trimmedMessage,
       timestamp: new Date().toISOString(),
     };
 
-    socket.emit("sendMessage", messageData);
+    // Optimistic update
+    // setMessages((prev) => [...prev, messageData]); // Wait for server ack instead to avoid dupes if we want strict consistency, but optimistic is better UX. 
+    // Actually, server sends back "receiveMessage" to sender too, so we can just wait for that or handle deduping.
+    // Let's rely on server response for now to ensure persistence is confirmed.
+    
+    socket.emit("sendMessage", { to: selectedConversation, message: trimmedMessage });
     setNewMessage("");
     textareaRef.current?.focus();
   };
@@ -97,116 +139,188 @@ export default function Messaging() {
     });
   };
 
+  const filteredConversations = conversations.filter((conv) =>
+    conv.name?.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
   return (
-    <div className="flex flex-col h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-gradient-to-r from-blue-600 to-blue-700 text-white shadow-lg">
-        <div className="px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center">
-              <span className="text-lg font-bold">{agentId[0]?.toUpperCase()}</span>
-            </div>
-            <div>
-              <h1 className="text-xl font-semibold">Agent Chat</h1>
-              <p className="text-sm opacity-90">Agent ID: {agentId}</p>
-            </div>
-          </div>
-          <div className="flex items-center space-x-2">
-            <div className="w-3 h-3 bg-green-400 rounded-full animate-pulse"></div>
-            <span className="text-sm">Online</span>
+    <div className="flex h-full bg-dark-900">
+      {/* Conversations Sidebar */}
+      <div className="w-80 bg-dark-800 border-r border-white/10 flex flex-col">
+        {/* Search */}
+        <div className="p-4 border-b border-white/10">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-500" />
+            <input
+              type="text"
+              placeholder="Search conversations..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-dark-700 border border-white/10 rounded-xl py-2 pl-10 pr-4 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-accent-purple"
+            />
           </div>
         </div>
-      </header>
 
-      {/* Messages Area */}
-      <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4 bg-chat-pattern bg-gray-50">
-        {messages.length === 0 ? (
-          <div className="text-center text-gray-500 mt-10">
-            <p className="text-lg">No messages yet</p>
-            <p className="text-sm">Start the conversation!</p>
-          </div>
-        ) : (
-          messages.map((msg, idx) => (
-            <div
-              key={idx}
-              className={`flex ${msg.from === agentId ? "justify-end" : "justify-start"} animate-fadeIn`}
-            >
-              <div
-                className={`relative max-w-sm md:max-w-md lg:max-w-lg px-4 py-3 rounded-2xl shadow-sm ${
-                  msg.from === agentId
-                    ? "bg-blue-600 text-white rounded-br-none"
-                    : "bg-white text-gray-800 border border-gray-200 rounded-bl-none"
+        {/* Conversations List */}
+        <div className="flex-1 overflow-y-auto">
+          {filteredConversations.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">
+              <MessageSquare className="w-8 h-8 mx-auto mb-2 opacity-50" />
+              <p className="text-sm">No conversations yet</p>
+            </div>
+          ) : (
+            filteredConversations.map((conv) => (
+              <button
+                key={conv.id}
+                onClick={() => setSelectedConversation(conv.id)}
+                className={`w-full p-4 flex items-center gap-3 hover:bg-dark-700 transition-all border-b border-white/5 ${
+                  selectedConversation === conv.id ? "bg-dark-700 border-l-2 border-l-accent-purple" : ""
                 }`}
               >
-                {msg.from !== agentId && (
-                  <p className="text-xs font-medium text-blue-600 mb-1">
-                    Agent {msg.from}
-                  </p>
+                <div className="w-10 h-10 bg-gradient-to-br from-accent-purple to-accent-blue rounded-full flex items-center justify-center flex-shrink-0">
+                  <span className="text-white font-bold text-sm">
+                    {conv.name?.[0]?.toUpperCase() || "?"}
+                  </span>
+                </div>
+                <div className="flex-1 min-w-0 text-left">
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-white truncate">{conv.name}</span>
+                    <span className="text-xs text-gray-500">{formatTime(conv.timestamp)}</span>
+                  </div>
+                  <p className="text-sm text-gray-400 truncate">{conv.lastMessage}</p>
+                </div>
+                {conv.unread > 0 && (
+                  <div className="w-5 h-5 bg-accent-purple rounded-full flex items-center justify-center">
+                    <span className="text-xs text-white font-bold">{conv.unread}</span>
+                  </div>
                 )}
-                <p className="text-sm md:text-base break-words">{msg.message}</p>
-                <span
-                  className={`block text-xs mt-1 ${
-                    msg.from === agentId ? "text-blue-200" : "text-gray-500"
-                  }`}
-                >
-                  {formatTime(msg.timestamp)}
-                </span>
-              </div>
-            </div>
-          ))
-        )}
-
-        {isTyping && (
-          <div className="flex justify-start">
-            <div className="bg-white px-4 py-3 rounded-2xl shadow-sm">
-              <div className="flex space-x-2">
-                <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></span>
-                <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-100"></span>
-                <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-200"></span>
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div ref={messagesEndRef} />
+              </button>
+            ))
+          )}
+        </div>
       </div>
 
-      {/* Input Area */}
-      <div className="bg-white border-t border-gray-200 px-4 py-4">
-        <div className="flex items-end gap-3 max-w-4xl mx-auto">
-          <button className="text-gray-500 hover:text-gray-700 mb-2">
-            <Paperclip size={22} />
-          </button>
+      {/* Chat Area */}
+      <div className="flex-1 flex flex-col">
+        {selectedConversation ? (
+          <>
+            {/* Chat Header */}
+            <div className="bg-dark-800 border-b border-white/10 px-6 py-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-gradient-to-br from-accent-purple to-accent-blue rounded-full flex items-center justify-center">
+                  <span className="text-white font-bold">
+                    {selectedConversation[0]?.toUpperCase()}
+                  </span>
+                </div>
+                <div>
+                  <h2 className="font-semibold text-white">{selectedConversation}</h2>
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 bg-accent-green rounded-full" />
+                    <span className="text-sm text-gray-400">Online</span>
+                  </div>
+                </div>
+              </div>
+            </div>
 
-          <textarea
-            ref={textareaRef}
-            rows={1}
-            className="flex-1 resize-none border border-gray-300 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-            placeholder="Type your message..."
-            value={newMessage}
-            onChange={(e) => setNewMessage(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onFocus={() => socket.emit("typing", { from: agentId })}
-            onBlur={() => socket.emit("stopTyping")}
-          />
+            {/* Messages */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+              {messages.length === 0 ? (
+                <div className="text-center text-gray-500 mt-10">
+                  <MessageSquare className="w-12 h-12 mx-auto mb-4 opacity-30" />
+                  <p>No messages yet</p>
+                  <p className="text-sm">Start the conversation!</p>
+                </div>
+              ) : (
+                messages.map((msg, idx) => (
+                  <div
+                    key={idx}
+                    className={`flex ${msg.from === agentId ? "justify-end" : "justify-start"}`}
+                  >
+                    <div
+                      className={`max-w-md px-4 py-3 rounded-2xl ${
+                        msg.from === agentId
+                          ? "bg-gradient-to-r from-accent-purple to-accent-blue text-white rounded-br-none"
+                          : "bg-dark-700 text-gray-100 rounded-bl-none"
+                      }`}
+                    >
+                      {msg.from !== agentId && (
+                        <p className="text-xs font-medium text-accent-purple mb-1">
+                          {msg.from}
+                        </p>
+                      )}
+                      <p className="text-sm break-words">{msg.message}</p>
+                      <span className={`block text-xs mt-1 ${msg.from === agentId ? "text-white/70" : "text-gray-500"}`}>
+                        {formatTime(msg.timestamp)}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
 
-          <div className="flex items-center gap-2 mb-2">
-            <button className="text-gray-500 hover:text-gray-700">
-              <Smile size={22} />
-            </button>
-            <button
-              onClick={handleSend}
-              disabled={!newMessage.trim()}
-              className={`p-3 rounded-full transition-all ${
-                newMessage.trim()
-                  ? "bg-blue-600 hover:bg-blue-700 text-white shadow-lg"
-                  : "bg-gray-200 text-gray-400 cursor-not-allowed"
-              }`}
-            >
-              <Send size={20} />
-            </button>
+              {isTyping && (
+                <div className="flex justify-start">
+                  <div className="bg-dark-700 px-4 py-3 rounded-2xl">
+                    <div className="flex space-x-2">
+                      <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" />
+                      <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: "0.1s" }} />
+                      <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: "0.2s" }} />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Input */}
+            <div className="bg-dark-800 border-t border-white/10 p-4">
+              <div className="flex items-end gap-3">
+                <button className="text-gray-500 hover:text-gray-300 mb-2">
+                  <Paperclip size={20} />
+                </button>
+
+                <textarea
+                  ref={textareaRef}
+                  rows={1}
+                  className="flex-1 resize-none bg-dark-700 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-accent-purple transition-all"
+                  placeholder="Type your message..."
+                  value={newMessage}
+                  onChange={(e) => setNewMessage(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  onFocus={() => socket.emit("typing", { from: agentId })}
+                  onBlur={() => socket.emit("stopTyping")}
+                />
+
+                <div className="flex items-center gap-2 mb-2">
+                  <button className="text-gray-500 hover:text-gray-300">
+                    <Smile size={20} />
+                  </button>
+                  <button
+                    onClick={handleSend}
+                    disabled={!newMessage.trim()}
+                    className={`p-3 rounded-full transition-all ${
+                      newMessage.trim()
+                        ? "bg-gradient-to-r from-accent-purple to-accent-blue text-white shadow-lg"
+                        : "bg-dark-600 text-gray-500 cursor-not-allowed"
+                    }`}
+                  >
+                    <Send size={18} />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center">
+              <div className="w-20 h-20 bg-dark-700 rounded-full flex items-center justify-center mx-auto mb-4">
+                <MessageSquare className="w-10 h-10 text-gray-500" />
+              </div>
+              <h3 className="text-xl font-semibold text-white mb-2">Select a Conversation</h3>
+              <p className="text-gray-400">Choose a conversation from the list to start messaging</p>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

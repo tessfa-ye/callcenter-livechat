@@ -29,4 +29,37 @@ router.post("/login", async (req, res) => {
   }
 });
 
+// PUT /api/auth/status - Update agent status
+router.put("/status", async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return res.status(401).json({ message: "No token" });
+
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
+
+  try {
+    const jwt = require("jsonwebtoken");
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id);
+
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    user.status = req.body.status;
+    await user.save();
+
+    res.json({ message: "Status updated", status: user.status });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// GET /api/auth/agents - Get list of agents (for messaging)
+router.get("/agents", async (req, res) => {
+  try {
+    const agents = await User.find({ role: "agent" }).select("-password");
+    res.json(agents);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 module.exports = router;
