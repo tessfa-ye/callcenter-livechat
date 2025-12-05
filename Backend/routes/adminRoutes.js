@@ -3,6 +3,7 @@ const router = express.Router();
 const bcrypt = require("bcryptjs");
 const User = require("../models/User");
 const { authMiddleware, adminOnly } = require("../middleware/authMiddleware");
+const { createAsteriskExtension } = require("../services/asteriskService");
 
 // Apply auth and admin middleware to all routes
 router.use(authMiddleware);
@@ -50,14 +51,20 @@ router.post("/agents", async (req, res) => {
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
-        // Create agent
+        // Create agent in DB
         const agent = await User.create({
             username,
             password: hashedPassword,
             email: email || "",
             extension: extension || "",
             role: "agent",
+            status: "offline"
         });
+
+        // Create extension in Asterisk (Async)
+        createAsteriskExtension(username, password, extension)
+            .then(() => console.log(`Asterisk extension ${extension} created`))
+            .catch(err => console.error("Failed to create Asterisk extension:", err));
 
         res.status(201).json({
             _id: agent._id,
