@@ -13,11 +13,31 @@ import {
   Headphones,
   CheckCircle,
   MessageSquare,
+  Grid,
+  Phone,
+  PhoneOff,
 } from "lucide-react";
+import Dialpad from "../components/Dialpad";
+import { useSIP } from "../hooks/useSIP";
 
 export default function Dashboard() {
   const socket = useSocket();
   const navigate = useNavigate();
+
+  // SIP / WebRTC
+  const [isDialpadOpen, setIsDialpadOpen] = useState(false);
+  const username = localStorage.getItem("username");
+  const sipPassword = localStorage.getItem("sipPassword") || "1234";
+  const asteriskIp = "172.20.47.25"; // Hardcoded for demo/user config
+
+  const {
+    status: sipStatus,
+    callStatus,
+    makeCall,
+    hangup,
+    answerCall,
+    incomingSession,
+  } = useSIP(username, sipPassword, asteriskIp);
   const [incomingCall, setIncomingCall] = useState(null);
   const [agents, setAgents] = useState([]);
   const [stats, setStats] = useState({
@@ -37,14 +57,28 @@ export default function Dashboard() {
         const res = await api.get("/auth/agents", {
           headers: { Authorization: `Bearer ${token}` },
         });
-        setAgents(res.data || []);
+        // Filter out the current logged-in user
+        const otherAgents = (res.data || []).filter(
+          (agent) => agent.username !== username
+        );
+        setAgents(otherAgents);
       } catch (err) {
         // Mock data fallback
         setAgents([
-          { _id: "1", username: "Sarah", status: "available", extension: "1001" },
+          {
+            _id: "1",
+            username: "Sarah",
+            status: "available",
+            extension: "1001",
+          },
           { _id: "2", username: "Mike", status: "busy", extension: "1002" },
           { _id: "3", username: "Lisa", status: "away", extension: "1003" },
-          { _id: "4", username: "David", status: "available", extension: "1004" },
+          {
+            _id: "4",
+            username: "David",
+            status: "available",
+            extension: "1004",
+          },
           { _id: "5", username: "Emma", status: "offline", extension: "1005" },
         ]);
       }
@@ -65,8 +99,8 @@ export default function Dashboard() {
 
     // Listen for agent status updates
     socket.on("agent:status_update", ({ username, status }) => {
-      setAgents((prevAgents) => 
-        prevAgents.map(agent => 
+      setAgents((prevAgents) =>
+        prevAgents.map((agent) =>
           agent.username === username ? { ...agent, status } : agent
         )
       );
@@ -115,7 +149,10 @@ export default function Dashboard() {
       available: { class: "badge-available", label: "Available" },
       busy: { class: "badge-busy", label: "Busy" },
       away: { class: "badge-away", label: "Away" },
-      offline: { class: "bg-gray-500/20 text-gray-400 border border-gray-500/30", label: "Offline" },
+      offline: {
+        class: "bg-gray-500/20 text-gray-400 border border-gray-500/30",
+        label: "Offline",
+      },
     };
     return statuses[status] || statuses.offline;
   };
@@ -134,10 +171,10 @@ export default function Dashboard() {
 
         const [statsRes, callsRes] = await Promise.all([
           api.get("/calls/stats", { headers }),
-          api.get("/calls/recent", { headers })
+          api.get("/calls/recent", { headers }),
         ]);
 
-        setStats(prev => ({ ...prev, ...statsRes.data }));
+        setStats((prev) => ({ ...prev, ...statsRes.data }));
         setRecentCalls(callsRes.data);
       } catch (err) {
         console.error("Failed to fetch dashboard data:", err);
@@ -158,22 +195,43 @@ export default function Dashboard() {
           <h1 className="text-2xl font-bold text-white">Dashboard</h1>
           <p className="text-gray-400">Real-time call center overview</p>
         </div>
+        <button
+          onClick={() => setIsDialpadOpen(true)}
+          className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-accent-purple to-accent-blue rounded-xl text-white text-sm font-medium hover:shadow-lg hover:shadow-accent-purple/20 transition-all"
+        >
+          <Grid size={16} />
+          Dialpad
+        </button>
         <div className="flex items-center gap-2 px-4 py-2 bg-accent-green/20 rounded-xl border border-accent-green/30">
           <div className="w-2 h-2 bg-accent-green rounded-full animate-pulse" />
-          <span className="text-accent-green text-sm font-medium">System Online</span>
+          <span className="text-accent-green text-sm font-medium">
+            System Online
+          </span>
         </div>
       </div>
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {statCards.map((stat, idx) => (
-          <div key={idx} className="stat-card animate-slide-up" style={{ animationDelay: `${idx * 50}ms` }}>
+          <div
+            key={idx}
+            className="stat-card animate-slide-up"
+            style={{ animationDelay: `${idx * 50}ms` }}
+          >
             <div className="flex items-start justify-between">
-              <div className={`w-12 h-12 rounded-xl bg-${stat.color}/20 flex items-center justify-center`}>
+              <div
+                className={`w-12 h-12 rounded-xl bg-${stat.color}/20 flex items-center justify-center`}
+              >
                 <stat.icon className={`w-6 h-6 text-${stat.color}`} />
               </div>
               {stat.trend && (
-                <span className={`text-xs font-medium ${stat.trend.startsWith('+') ? 'text-accent-green' : 'text-accent-blue'}`}>
+                <span
+                  className={`text-xs font-medium ${
+                    stat.trend.startsWith("+")
+                      ? "text-accent-green"
+                      : "text-accent-blue"
+                  }`}
+                >
                   {stat.trend}
                 </span>
               )}
@@ -205,7 +263,9 @@ export default function Dashboard() {
                     <Headphones className="w-4 h-4 text-gray-400" />
                   </div>
                   <div>
-                    <p className="font-medium text-white text-sm">{call.caller}</p>
+                    <p className="font-medium text-white text-sm">
+                      {call.caller}
+                    </p>
                     <p className="text-xs text-gray-400">{call.agent}</p>
                   </div>
                 </div>
@@ -213,7 +273,9 @@ export default function Dashboard() {
                   <span className="text-gray-400 text-xs">{call.duration}</span>
                   <span
                     className={`block text-xs mt-1 ${
-                      call.status === "completed" ? "text-accent-green" : "text-accent-orange"
+                      call.status === "completed"
+                        ? "text-accent-green"
+                        : "text-accent-orange"
                     }`}
                   >
                     {call.status === "completed" ? "Done" : "Active"}
@@ -249,12 +311,18 @@ export default function Dashboard() {
                       </span>
                     </div>
                     <div>
-                      <p className="font-medium text-white text-sm">{agent.username}</p>
-                      <p className="text-xs text-gray-400">Ext: {agent.extension || "N/A"}</p>
+                      <p className="font-medium text-white text-sm">
+                        {agent.username}
+                      </p>
+                      <p className="text-xs text-gray-400">
+                        Ext: {agent.extension || "N/A"}
+                      </p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className={`badge text-xs ${status.class}`}>{status.label}</span>
+                    <span className={`badge text-xs ${status.class}`}>
+                      {status.label}
+                    </span>
                     <button className="p-1.5 bg-accent-purple/20 text-accent-purple rounded-lg opacity-0 group-hover:opacity-100 transition-all">
                       <MessageSquare className="w-4 h-4" />
                     </button>
@@ -267,7 +335,9 @@ export default function Dashboard() {
 
         {/* Quick Stats */}
         <div className="glass-card p-6">
-          <h2 className="text-lg font-semibold text-white mb-6">Today's Performance</h2>
+          <h2 className="text-lg font-semibold text-white mb-6">
+            Today's Performance
+          </h2>
           <div className="space-y-6">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
@@ -275,7 +345,9 @@ export default function Dashboard() {
                   <CheckCircle className="w-5 h-5 text-accent-green" />
                 </div>
                 <div>
-                  <p className="text-white font-medium">{stats.resolvedToday}</p>
+                  <p className="text-white font-medium">
+                    {stats.resolvedToday}
+                  </p>
                   <p className="text-sm text-gray-400">Resolved</p>
                 </div>
               </div>
@@ -320,6 +392,43 @@ export default function Dashboard() {
           }}
         />
       )}
+      {/* Incoming Call Modal */}
+      {callStatus === "incoming" && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[60] animate-in fade-in zoom-in">
+          <div className="bg-dark-800 p-8 rounded-2xl border border-accent-purple/50 shadow-2xl flex flex-col items-center">
+            <div className="w-20 h-20 bg-dark-700 rounded-full flex items-center justify-center mb-4 animate-bounce">
+              <PhoneIncoming className="w-10 h-10 text-accent-green" />
+            </div>
+            <h2 className="text-2xl font-bold text-white mb-2">
+              Incoming Call
+            </h2>
+            <p className="text-gray-400 mb-8">
+              {incomingSession?.remoteIdentity?.uri?.user || "Unknown"}
+            </p>
+            <div className="flex gap-4">
+              <button
+                onClick={answerCall}
+                className="w-14 h-14 rounded-full bg-accent-green flex items-center justify-center text-white hover:scale-110 transition-transform"
+              >
+                <Phone size={24} fill="currentColor" />
+              </button>
+              <button
+                onClick={hangup}
+                className="w-14 h-14 rounded-full bg-red-500 flex items-center justify-center text-white hover:scale-110 transition-transform"
+              >
+                <PhoneOff size={24} />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <Dialpad
+        isOpen={isDialpadOpen}
+        onClose={() => setIsDialpadOpen(false)}
+        onCall={(num) => (num ? makeCall(num) : hangup())}
+        activeCallStatus={callStatus}
+      />
     </div>
   );
 }

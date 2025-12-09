@@ -3,6 +3,23 @@ const router = express.Router();
 const Message = require("../models/Message");
 const User = require("../models/User");
 
+// POST /api/messages - Save a new message
+router.post("/", async (req, res) => {
+  try {
+    const { from, to, message, source } = req.body;
+    const newMsg = await Message.create({
+      from,
+      to,
+      message,
+      timestamp: new Date(),
+      source: source || "web"
+    });
+    res.status(201).json(newMsg);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 // GET /api/messages/conversations/:agentId
 router.get("/conversations/:agentId", async (req, res) => {
   const { agentId } = req.params;
@@ -80,6 +97,37 @@ router.get("/:agentId", async (req, res) => {
       $or: [{ from: agentId }, { to: agentId }]
     }).sort({ timestamp: 1 });
     res.json(messages);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// PUT /api/messages/:id - Edit a message
+router.put("/:id", async (req, res) => {
+  try {
+    const { message } = req.body;
+    const updated = await Message.findByIdAndUpdate(
+      req.params.id,
+      { message, edited: true },
+      { new: true }
+    );
+    if (!updated) {
+      return res.status(404).json({ message: "Message not found" });
+    }
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// DELETE /api/messages/:id - Delete a message
+router.delete("/:id", async (req, res) => {
+  try {
+    const deleted = await Message.findByIdAndDelete(req.params.id);
+    if (!deleted) {
+      return res.status(404).json({ message: "Message not found" });
+    }
+    res.json({ message: "Message deleted" });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

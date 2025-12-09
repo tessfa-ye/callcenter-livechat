@@ -1,12 +1,25 @@
 import { useState, useEffect, useCallback } from "react";
-import { User, Mail, Phone, Save, CheckCircle, Coffee, Clock, Bell, BellOff } from "lucide-react";
+import {
+  User,
+  Mail,
+  Phone,
+  Save,
+  CheckCircle,
+  Coffee,
+  Clock,
+  Bell,
+  BellOff,
+} from "lucide-react";
 import api from "../services/api";
 import { io } from "socket.io-client";
 
 // Initialize socket
-const socket = io(import.meta.env.VITE_BACKEND_URL || "http://localhost:5000", {
-  autoConnect: true,
-});
+const socket = io(
+  import.meta.env.VITE_BACKEND_URL || "http://172.20.47.19:5000",
+  {
+    autoConnect: true,
+  }
+);
 
 export default function AgentProfile() {
   const userData = JSON.parse(localStorage.getItem("agent")) || {};
@@ -36,13 +49,17 @@ export default function AgentProfile() {
   const [breakDuration, setBreakDuration] = useState(15); // minutes
 
   // Notification state
-  const [notifications, setNotifications] = useState(userData.notifications ?? true);
+  const [notifications, setNotifications] = useState(
+    userData.notifications ?? true
+  );
 
   // Format break time
   const formatTime = (seconds) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
-    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+    return `${mins.toString().padStart(2, "0")}:${secs
+      .toString()
+      .padStart(2, "0")}`;
   };
 
   // Break timer effect
@@ -68,12 +85,16 @@ export default function AgentProfile() {
     setIsOnBreak(true);
     setBreakTime(0);
     setStatus("away");
-    
+
     // Update status in backend
     try {
-      await api.put("/auth/status", { status: "away" }, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      await api.put(
+        "/auth/status",
+        { status: "away" },
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
       socket.emit("updateStatus", { status: "away" });
     } catch (err) {
       console.error("Failed to update status:", err);
@@ -84,12 +105,16 @@ export default function AgentProfile() {
     setIsOnBreak(false);
     setBreakTime(0);
     setStatus("available");
-    
+
     // Update status in backend
     try {
-      await api.put("/auth/status", { status: "available" }, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      await api.put(
+        "/auth/status",
+        { status: "available" },
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
       socket.emit("updateStatus", { status: "available" });
     } catch (err) {
       console.error("Failed to update status:", err);
@@ -105,9 +130,13 @@ export default function AgentProfile() {
     // If status changed manually
     if (status !== userData.status) {
       try {
-        await api.put("/auth/status", { status }, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        await api.put(
+          "/auth/status",
+          { status },
+          {
+            headers: { Authorization: `Bearer ${token}` },
+          }
+        );
         socket.emit("updateStatus", { status });
       } catch (err) {
         console.error("Failed to update status:", err);
@@ -141,9 +170,7 @@ export default function AgentProfile() {
             <Coffee className="w-5 h-5 text-accent-orange" />
             Break Timer
           </h2>
-          {isOnBreak && (
-            <span className="badge badge-away">On Break</span>
-          )}
+          {isOnBreak && <span className="badge badge-away">On Break</span>}
         </div>
 
         {isOnBreak ? (
@@ -151,13 +178,13 @@ export default function AgentProfile() {
             <div className="text-5xl font-bold text-white mb-2 font-mono">
               {formatTime(breakTime)}
             </div>
-            <p className="text-gray-400 mb-6">
-              of {breakDuration} minutes
-            </p>
+            <p className="text-gray-400 mb-6">of {breakDuration} minutes</p>
             <div className="w-full h-2 bg-dark-700 rounded-full overflow-hidden mb-6">
-              <div 
+              <div
                 className="h-full bg-gradient-to-r from-accent-orange to-accent-red rounded-full transition-all"
-                style={{ width: `${(breakTime / (breakDuration * 60)) * 100}%` }}
+                style={{
+                  width: `${(breakTime / (breakDuration * 60)) * 100}%`,
+                }}
               />
             </div>
             <button onClick={endBreak} className="btn-primary">
@@ -182,7 +209,10 @@ export default function AgentProfile() {
                 </button>
               ))}
             </div>
-            <button onClick={startBreak} className="btn-secondary w-full flex items-center justify-center gap-2">
+            <button
+              onClick={startBreak}
+              className="btn-secondary w-full flex items-center justify-center gap-2"
+            >
               <Clock className="w-5 h-5" />
               Start Break
             </button>
@@ -203,7 +233,12 @@ export default function AgentProfile() {
             <h2 className="text-xl font-bold text-white">{name}</h2>
             <p className="text-gray-400">Call Center Agent</p>
             <div className="flex items-center gap-2 mt-2">
-              <div className={`w-2 h-2 rounded-full bg-${statusOptions.find(s => s.value === status)?.color || 'gray-400'}`} />
+              <div
+                className={`w-2 h-2 rounded-full bg-${
+                  statusOptions.find((s) => s.value === status)?.color ||
+                  "gray-400"
+                }`}
+              />
               <span className="text-sm text-gray-300 capitalize">{status}</span>
             </div>
           </div>
@@ -223,7 +258,7 @@ export default function AgentProfile() {
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 className="input-field"
-                style={{ paddingLeft: '3rem' }}
+                style={{ paddingLeft: "3rem" }}
                 placeholder="Your name"
               />
             </div>
@@ -241,7 +276,7 @@ export default function AgentProfile() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 className="input-field"
-                style={{ paddingLeft: '3rem' }}
+                style={{ paddingLeft: "3rem" }}
                 placeholder="agent@company.com"
               />
             </div>
@@ -259,7 +294,7 @@ export default function AgentProfile() {
                 value={extension}
                 onChange={(e) => setExtension(e.target.value)}
                 className="input-field"
-                style={{ paddingLeft: '3rem' }}
+                style={{ paddingLeft: "3rem" }}
                 placeholder="1001"
               />
             </div>
@@ -278,9 +313,15 @@ export default function AgentProfile() {
                   : "bg-dark-700 border-white/10 text-gray-400"
               }`}
             >
-              {notifications ? <Bell className="w-5 h-5" /> : <BellOff className="w-5 h-5" />}
+              {notifications ? (
+                <Bell className="w-5 h-5" />
+              ) : (
+                <BellOff className="w-5 h-5" />
+              )}
               <span className="font-medium">
-                {notifications ? "Notifications Enabled" : "Notifications Disabled"}
+                {notifications
+                  ? "Notifications Enabled"
+                  : "Notifications Disabled"}
               </span>
             </button>
           </div>
@@ -300,15 +341,19 @@ export default function AgentProfile() {
                     status === option.value
                       ? `bg-${option.color}/20 border-${option.color}/50 text-${option.color}`
                       : "bg-dark-700 border-white/10 text-gray-400 hover:bg-dark-600"
-                  } ${isOnBreak ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  } ${isOnBreak ? "opacity-50 cursor-not-allowed" : ""}`}
                 >
-                  <div className={`w-3 h-3 rounded-full bg-${option.color} mx-auto mb-2`} />
+                  <div
+                    className={`w-3 h-3 rounded-full bg-${option.color} mx-auto mb-2`}
+                  />
                   <span className="text-sm font-medium">{option.label}</span>
                 </button>
               ))}
             </div>
             {isOnBreak && (
-              <p className="text-sm text-gray-500 mt-2">Status locked during break</p>
+              <p className="text-sm text-gray-500 mt-2">
+                Status locked during break
+              </p>
             )}
           </div>
 

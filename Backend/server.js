@@ -49,6 +49,29 @@ ami.keepConnected();
 ami.on("managerevent", (event) => {
   // Broadcast all Asterisk events to frontend
   io.emit("asterisk-event", event);
+
+  // Handle incoming SIP MESSAGE from Asterisk
+  if (event.event === "MessageEntry") {
+    const { from, to, body } = event;
+    const fromExt = from?.match(/sip:(\d+)@/)?.[1] || from;
+    const toExt = to?.match(/sip:(\d+)@/)?.[1] || to;
+
+    console.log(`SIP MESSAGE: ${fromExt} -> ${toExt}: ${body}`);
+
+    // Save to DB
+    const newMsg = {
+      from: fromExt,
+      to: toExt,
+      message: body,
+      timestamp: new Date(),
+      source: "sip"
+    };
+
+    Message.create(newMsg).then((savedMsg) => {
+      // Send to target agent if connected via Socket.IO
+      io.to(toExt).emit("receiveMessage", savedMsg);
+    }).catch(err => console.error("SIP Message save error:", err));
+  }
 });
 
 // --- Socket.IO messaging ---
@@ -94,15 +117,17 @@ io.on("connection", (socket) => {
       io.to(to).emit("receiveMessage", newMsg);
       socket.emit("receiveMessage", newMsg); // Send back to sender for confirmation
 
-      // Send via Asterisk (Optional/If configured)
+      // Send via Asterisk SIP MESSAGE (for Zoiper and other SIP phones)
       if (process.env.AMI_HOST) {
+        const asteriskIp = process.env.AMI_HOST;
         ami.action({
           action: "MessageSend",
-          to: `SIP/${to}`,
-          from: agentId,
-          message,
+          to: `pjsip:${to}`,
+          from: `"${agentId}" <sip:${agentId}@${asteriskIp}>`,
+          body: message,
         }, (err, response) => {
-          if (err) console.log("AMI Error:", err.message);
+          if (err) console.log("AMI MessageSend Error:", err.message);
+          else console.log("SIP MESSAGE sent from", agentId, "to:", to);
         });
       }
     } catch (err) {
