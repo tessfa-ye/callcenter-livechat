@@ -20,7 +20,7 @@ import { useSIP } from "../hooks/useSIP";
 
 // Initialize socket
 const socket = io(
-  import.meta.env.VITE_BACKEND_URL || "http://172.20.47.19:5000",
+  "/",
   {
     autoConnect: true,
     reconnection: true,

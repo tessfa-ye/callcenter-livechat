@@ -14,12 +14,10 @@ import api from "../services/api";
 import { io } from "socket.io-client";
 
 // Initialize socket
-const socket = io(
-  import.meta.env.VITE_BACKEND_URL || "http://172.20.47.19:5000",
-  {
-    autoConnect: true,
-  }
-);
+const socket = io("/", {
+  autoConnect: true,
+  reconnection: true,
+});
 
 export default function AgentProfile() {
   const userData = JSON.parse(localStorage.getItem("agent")) || {};

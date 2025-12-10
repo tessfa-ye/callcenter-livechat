@@ -37,6 +37,11 @@ export default function Dashboard() {
     hangup,
     answerCall,
     incomingSession,
+    isMuted,
+    toggleMute,
+    sendDTMF,
+    toggleHold,
+    isOnHold,
   } = useSIP(username, sipPassword, asteriskIp);
   const [incomingCall, setIncomingCall] = useState(null);
   const [agents, setAgents] = useState([]);
@@ -48,6 +53,12 @@ export default function Dashboard() {
     callsToday: 156,
     resolvedToday: 142,
   });
+
+  // Wrapper to open Dialpad on answer
+  const handleAnswerCall = () => {
+    answerCall();
+    setIsDialpadOpen(true);
+  };
 
   useEffect(() => {
     // Fetch agents list
@@ -407,7 +418,7 @@ export default function Dashboard() {
             </p>
             <div className="flex gap-4">
               <button
-                onClick={answerCall}
+                onClick={handleAnswerCall}
                 className="w-14 h-14 rounded-full bg-accent-green flex items-center justify-center text-white hover:scale-110 transition-transform"
               >
                 <Phone size={24} fill="currentColor" />
@@ -428,6 +439,12 @@ export default function Dashboard() {
         onClose={() => setIsDialpadOpen(false)}
         onCall={(num) => (num ? makeCall(num) : hangup())}
         activeCallStatus={callStatus}
+        toggleMute={toggleMute}
+        isMuted={isMuted}
+        sendDTMF={sendDTMF}
+        callerId={incomingSession?.remoteIdentity?.uri?.user}
+        toggleHold={toggleHold}
+        isOnHold={isOnHold}
       />
     </div>
   );

@@ -4,11 +4,26 @@ import { UserAgent, Registerer, Inviter, SessionState } from "sip.js";
 export const useSIP = (agentName, agentPassword, asteriskIp) => {
     const [userAgent, setUserAgent] = useState(null);
     const [session, setSession] = useState(null);
-    const [status, setStatus] = useState("disconnected"); // disconnected, registering, registered, error
-    const [callStatus, setCallStatus] = useState("idle"); // idle, calling, incoming, connected, ended
+    const [isMuted, setIsMuted] = useState(false);
+    const [isOnHold, setIsOnHold] = useState(false);
+    const [heldSession, setHeldSession] = useState(null);
+    const [status, setStatus] = useState("disconnected");
+    const [callStatus, setCallStatus] = useState("idle");
     const [incomingSession, setIncomingSession] = useState(null);
 
     const audioRef = useRef(new Audio());
+
+    // Refs to access current state inside callbacks/listeners
+    const sessionRef = useRef(null);
+    const heldSessionRef = useRef(null);
+
+    useEffect(() => {
+        sessionRef.current = session;
+    }, [session]);
+
+    useEffect(() => {
+        heldSessionRef.current = heldSession;
+    }, [heldSession]);
 
     useEffect(() => {
         console.log("=== useSIP Debug ===");
@@ -95,20 +110,80 @@ export const useSIP = (agentName, agentPassword, asteriskIp) => {
     }, [agentName, agentPassword, asteriskIp]);
 
     const handleIncomingCall = (invitation) => {
-        setCallStatus("incoming");
+        // If we really want to support 'Call Waiting' UI without auto-rejecting,
+        // we should just setIncomingSession. Dashboard will show the modal.
+        if (!sessionRef.current) {
+            setCallStatus("incoming");
+        }
         setIncomingSession(invitation);
 
         invitation.stateChange.addListener((newState) => {
             if (newState === SessionState.Terminated) {
-                setCallStatus("ended");
-                setIncomingSession(null);
-                setTimeout(() => setCallStatus("idle"), 2000);
+                // Check if this was the incoming session being rejected/cancelled
+                setIncomingSession((prev) => (prev === invitation ? null : prev));
+
+                // If this was the active session, handle cleanup
+                if (sessionRef.current === invitation) {
+                    handleSessionTermination();
+                }
             }
         });
     };
 
+    const handleSessionTermination = () => {
+        // If we have a held session, resume it
+        if (heldSessionRef.current) {
+            console.log("Resuming held session...");
+            const held = heldSessionRef.current;
+
+            // Unhold
+            const unholdOptions = {
+                sessionDescriptionHandlerOptions: {
+                    hold: false
+                }
+            };
+            held.invite(unholdOptions)
+                .then(() => {
+                    setSession(held);
+                    setHeldSession(null);
+                    setCallStatus("connected");
+                    setIsOnHold(false);
+                    // Re-attach media
+                    setupRemoteMedia(held);
+                })
+                .catch(err => {
+                    console.error("Failed to resume held session", err);
+                    setSession(null);
+                    setHeldSession(null);
+                    setCallStatus("ended");
+                    setTimeout(() => setCallStatus("idle"), 2000);
+                });
+        } else {
+            // No held session, full cleanup
+            setCallStatus("ended");
+            setSession(null);
+            setIsMuted(false);
+            setIsOnHold(false);
+            setTimeout(() => setCallStatus("idle"), 2000);
+        }
+    };
+
     const answerCall = useCallback(() => {
         if (!incomingSession) return;
+
+        // If there is an active session, hold it and swap
+        if (session) {
+            console.log("Holding active session to answer new call...");
+            const holdOptions = {
+                sessionDescriptionHandlerOptions: {
+                    hold: true
+                }
+            };
+            session.invite(holdOptions).catch(err => console.error("Auto-hold failed", err));
+
+            setHeldSession(session);
+            setIsOnHold(false); // The NEW call starts not-on-hold
+        }
 
         incomingSession.accept()
             .then(() => {
@@ -117,7 +192,7 @@ export const useSIP = (agentName, agentPassword, asteriskIp) => {
                 setupRemoteMedia(incomingSession);
             })
             .catch((err) => console.error("Answer error:", err));
-    }, [incomingSession]);
+    }, [incomingSession, session]);
 
     const makeCall = useCallback((target) => {
         if (!userAgent) return;
@@ -140,9 +215,9 @@ export const useSIP = (agentName, agentPassword, asteriskIp) => {
                     setupRemoteMedia(inviter);
                     break;
                 case SessionState.Terminated:
-                    setCallStatus("ended");
-                    setSession(null);
-                    setTimeout(() => setCallStatus("idle"), 2000);
+                    if (sessionRef.current === inviter) {
+                        handleSessionTermination();
+                    }
                     break;
                 default:
                     break;
@@ -168,7 +243,46 @@ export const useSIP = (agentName, agentPassword, asteriskIp) => {
         setSession(null);
         setIncomingSession(null);
         setCallStatus("idle");
+        setIsMuted(false);
+        setIsOnHold(false);
     }, [session, incomingSession]);
+
+    const toggleMute = useCallback(() => {
+        if (!session) return;
+
+        const pc = session.sessionDescriptionHandler?.peerConnection;
+        if (!pc) return;
+
+        pc.getSenders().forEach((sender) => {
+            if (sender.track && sender.track.kind === "audio") {
+                sender.track.enabled = !sender.track.enabled;
+            }
+        });
+
+        setIsMuted(prev => !prev);
+    }, [session]);
+
+    const toggleHold = useCallback(() => {
+        if (!session || session.state !== SessionState.Established) return;
+
+        const holdOptions = {
+            sessionDescriptionHandlerOptions: {
+                hold: !isOnHold
+            }
+        };
+
+        session.invite(holdOptions)
+            .then(() => {
+                setIsOnHold(prev => !prev);
+            })
+            .catch((err) => console.error("Hold error:", err));
+    }, [session, isOnHold]);
+
+    const sendDTMF = useCallback((tone) => {
+        if (session && session.state === SessionState.Established) {
+            session.dtmf(tone);
+        }
+    }, [session]);
 
     const setupRemoteMedia = (activeSession) => {
         const pc = activeSession.sessionDescriptionHandler?.peerConnection;
@@ -189,6 +303,11 @@ export const useSIP = (agentName, agentPassword, asteriskIp) => {
         makeCall,
         answerCall,
         hangup,
-        incomingSession
+        incomingSession,
+        toggleMute,
+        isMuted,
+        toggleHold,
+        isOnHold,
+        sendDTMF
     };
 };

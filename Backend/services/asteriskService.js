@@ -1,4 +1,18 @@
 const { Client } = require("ssh2");
+const AsteriskManager = require("asterisk-manager");
+
+// Create AMI connection for reload
+let ami = null;
+if (process.env.AMI_HOST) {
+    ami = new AsteriskManager(
+        process.env.AMI_PORT,
+        process.env.AMI_HOST,
+        process.env.AMI_USER,
+        process.env.AMI_PASS,
+        true
+    );
+    ami.keepConnected();
+}
 
 const createAsteriskExtension = (username, password, extension) => {
     return new Promise((resolve, reject) => {
@@ -14,7 +28,6 @@ const createAsteriskExtension = (username, password, extension) => {
             console.log("SSH Connection Ready");
 
             // Command to run on Ubuntu
-            // We'll assume a script exists: /usr/local/bin/create_agent.sh <username> <password> <extension>
             const cmd = `/usr/local/bin/create_agent.sh "${username}" "${password}" "${extension}"`;
 
             conn.exec(cmd, (err, stream) => {
@@ -26,8 +39,19 @@ const createAsteriskExtension = (username, password, extension) => {
                 stream.on("close", (code, signal) => {
                     console.log("Stream :: close :: code: " + code + ", signal: " + signal);
                     conn.end();
-                    if (code === 0) resolve();
-                    else reject(new Error(`Script exited with code ${code}`));
+
+                    if (code === 0) {
+                        // Also trigger PJSIP reload via AMI as backup
+                        if (ami) {
+                            ami.action({ action: "Command", command: "pjsip reload" }, (err, res) => {
+                                if (err) console.log("AMI PJSIP Reload Error:", err.message);
+                                else console.log("PJSIP Reload via AMI successful");
+                            });
+                        }
+                        resolve();
+                    } else {
+                        reject(new Error(`Script exited with code ${code}`));
+                    }
                 }).on("data", (data) => {
                     console.log("STDOUT: " + data);
                 }).stderr.on("data", (data) => {
@@ -42,7 +66,6 @@ const createAsteriskExtension = (username, password, extension) => {
             port: 22,
             username: process.env.ASTERISK_SSH_USER,
             password: process.env.ASTERISK_SSH_PASSWORD,
-            // privateKey: require('fs').readFileSync('/path/to/key') // Optional
         });
     });
 };

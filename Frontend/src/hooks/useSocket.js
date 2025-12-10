@@ -2,7 +2,7 @@ import { useEffect, useMemo } from "react";
 import { io } from "socket.io-client";
 
 export default function useSocket() {
-  const socket = useMemo(() => io("http://172.20.47.19:5000"), []);
+  const socket = useMemo(() => io("/"), []);
 
   useEffect(() => {
     return () => socket.disconnect();

@@ -1,7 +1,10 @@
+
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import { Headphones, User, Lock, ArrowRight, AlertCircle } from "lucide-react";
+
+import api from "../services/api";
 
 export default function Login() {
   const [username, setUsername] = useState("");
@@ -16,7 +19,7 @@ export default function Login() {
     setIsLoading(true);
 
     try {
-      const res = await axios.post("http://172.20.47.19:5000/api/auth/login", {
+      const res = await api.post("/auth/login", {
         username,
         password,
       });
