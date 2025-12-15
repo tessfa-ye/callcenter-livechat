@@ -52,11 +52,38 @@ router.put("/status", async (req, res) => {
   }
 });
 
-// GET /api/auth/agents - Get list of agents (for messaging)
+// GET /api/auth/agents - Get list of agents with status (for messaging)
 router.get("/agents", async (req, res) => {
+  // Simple auth check
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return res.status(401).json({ message: "No token provided" });
+
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
+
+  try {
+    const jwt = require("jsonwebtoken");
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    if (!decoded) return res.status(401).json({ message: "Invalid token" });
+  } catch (err) {
+    return res.status(401).json({ message: "Invalid token" });
+  }
+  // Fetch agents
   try {
     const agents = await User.find({ role: "agent" }).select("-password");
-    res.json(agents);
+
+    // Add additional info for each agent
+    const agentsWithStatus = agents.map(agent => ({
+      _id: agent._id,
+      username: agent.username,
+      email: agent.email,
+      extension: agent.extension,
+      status: agent.status,
+      isOnline: ["available", "busy", "away"].includes(agent.status),
+      lastSeen: new Date(), // In a real system, you'd track actual last activity
+      createdAt: agent.createdAt
+    }));
+
+    res.json(agentsWithStatus);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

@@ -10,8 +10,23 @@ export const useSIP = (agentName, agentPassword, asteriskIp) => {
     const [status, setStatus] = useState("disconnected");
     const [callStatus, setCallStatus] = useState("idle");
     const [incomingSession, setIncomingSession] = useState(null);
+    const [remoteIdentity, setRemoteIdentity] = useState(null); // Persist caller/callee ID
 
     const audioRef = useRef(new Audio());
+    const ringtoneRef = useRef(new Audio("/sounds/ringtone.mp3"));
+    const ringbackRef = useRef(new Audio("/sounds/ringback.mp3"));
+
+    useEffect(() => {
+        ringtoneRef.current.loop = true;
+        ringbackRef.current.loop = true;
+    }, []);
+
+    const stopRinging = useCallback(() => {
+        ringtoneRef.current.pause();
+        ringtoneRef.current.currentTime = 0;
+        ringbackRef.current.pause();
+        ringbackRef.current.currentTime = 0;
+    }, []);
 
     // Refs to access current state inside callbacks/listeners
     const sessionRef = useRef(null);
@@ -28,7 +43,6 @@ export const useSIP = (agentName, agentPassword, asteriskIp) => {
     useEffect(() => {
         console.log("=== useSIP Debug ===");
         console.log("Agent Name:", agentName);
-        console.log("Agent Password:", agentPassword ? "****" : "MISSING");
         console.log("Asterisk IP:", asteriskIp);
 
         if (!agentName || !agentPassword || !asteriskIp) {
@@ -39,9 +53,6 @@ export const useSIP = (agentName, agentPassword, asteriskIp) => {
         // SIP Configuration
         const sipUri = `sip:${agentName}@${asteriskIp}`;
         const wssUrl = `wss://${asteriskIp}:8089/ws`;
-
-        console.log("SIP URI:", sipUri);
-        console.log("WSS URL:", wssUrl);
 
         const uri = UserAgent.makeURI(sipUri);
         if (!uri) {
@@ -97,7 +108,6 @@ export const useSIP = (agentName, agentPassword, asteriskIp) => {
             })
             .catch((err) => {
                 console.error("❌ SIP Connection Error:", err.message);
-                console.error("Full error:", err);
                 setStatus("error");
             });
 
@@ -110,17 +120,25 @@ export const useSIP = (agentName, agentPassword, asteriskIp) => {
     }, [agentName, agentPassword, asteriskIp]);
 
     const handleIncomingCall = (invitation) => {
-        // If we really want to support 'Call Waiting' UI without auto-rejecting,
-        // we should just setIncomingSession. Dashboard will show the modal.
         if (!sessionRef.current) {
             setCallStatus("incoming");
+            ringtoneRef.current.play().catch(e => console.error("Ringtone error:", e));
         }
         setIncomingSession(invitation);
+        setRemoteIdentity(invitation.remoteIdentity.uri.user);
 
         invitation.stateChange.addListener((newState) => {
             if (newState === SessionState.Terminated) {
                 // Check if this was the incoming session being rejected/cancelled
                 setIncomingSession((prev) => (prev === invitation ? null : prev));
+
+                // Only clear if it was the active call
+                if (!sessionRef.current) {
+                    setRemoteIdentity(null);
+                    // Ensure ringing stops if the call was cancelled before answer
+                    stopRinging();
+                    setCallStatus("idle");
+                }
 
                 // If this was the active session, handle cleanup
                 if (sessionRef.current === invitation) {
@@ -156,14 +174,17 @@ export const useSIP = (agentName, agentPassword, asteriskIp) => {
                     setSession(null);
                     setHeldSession(null);
                     setCallStatus("ended");
+                    setRemoteIdentity(null);
                     setTimeout(() => setCallStatus("idle"), 2000);
                 });
         } else {
             // No held session, full cleanup
+            stopRinging();
             setCallStatus("ended");
             setSession(null);
             setIsMuted(false);
             setIsOnHold(false);
+            setRemoteIdentity(null);
             setTimeout(() => setCallStatus("idle"), 2000);
         }
     };
@@ -185,13 +206,29 @@ export const useSIP = (agentName, agentPassword, asteriskIp) => {
             setIsOnHold(false); // The NEW call starts not-on-hold
         }
 
-        incomingSession.accept()
+        // Optimistic UI update: Start timer immediately
+        stopRinging();
+        setCallStatus("connected");
+
+        const options = {
+            sessionDescriptionHandlerOptions: {
+                constraints: { audio: true, video: false },
+                iceGatheringTimeout: 200,
+            },
+        };
+
+        incomingSession.accept(options)
             .then(() => {
                 setSession(incomingSession);
+                // Status already set optimistically, but confirm it
                 setCallStatus("connected");
                 setupRemoteMedia(incomingSession);
             })
-            .catch((err) => console.error("Answer error:", err));
+            .catch((err) => {
+                console.error("Answer error:", err);
+                // Revert status on error
+                setCallStatus("incoming");
+            });
     }, [incomingSession, session]);
 
     const makeCall = useCallback((target) => {
@@ -203,18 +240,35 @@ export const useSIP = (agentName, agentPassword, asteriskIp) => {
             return;
         }
 
-        const inviter = new Inviter(userAgent, targetURI);
+        const inviter = new Inviter(userAgent, targetURI, {
+            delegate: {
+                onAccept: () => {
+                    // Fastest possible trigger for "Connected"
+                    stopRinging();
+                    setCallStatus("connected");
+                    setupRemoteMedia(inviter);
+                },
+            }
+        });
+
+        setRemoteIdentity(target);
 
         inviter.stateChange.addListener((newState) => {
             switch (newState) {
                 case SessionState.Establishing:
                     setCallStatus("calling");
+                    ringbackRef.current.play().catch(e => console.error("Ringback error:", e));
                     break;
                 case SessionState.Established:
-                    setCallStatus("connected");
-                    setupRemoteMedia(inviter);
+                    stopRinging();
+                    // Fallback if onAccept didn't fire (rare)
+                    if (callStatus !== "connected") {
+                        setCallStatus("connected");
+                        setupRemoteMedia(inviter);
+                    }
                     break;
                 case SessionState.Terminated:
+                    stopRinging();
                     if (sessionRef.current === inviter) {
                         handleSessionTermination();
                     }
@@ -224,7 +278,12 @@ export const useSIP = (agentName, agentPassword, asteriskIp) => {
             }
         });
 
-        inviter.invite()
+        inviter.invite({
+            sessionDescriptionHandlerOptions: {
+                constraints: { audio: true, video: false },
+                iceGatheringTimeout: 200,
+            },
+        })
             .catch((err) => console.error("Invite error:", err));
         setSession(inviter);
     }, [userAgent, asteriskIp]);
@@ -240,11 +299,13 @@ export const useSIP = (agentName, agentPassword, asteriskIp) => {
         if (incomingSession && incomingSession.state !== SessionState.Terminated) {
             incomingSession.reject();
         }
+        stopRinging();
         setSession(null);
         setIncomingSession(null);
         setCallStatus("idle");
         setIsMuted(false);
         setIsOnHold(false);
+        setRemoteIdentity(null);
     }, [session, incomingSession]);
 
     const toggleMute = useCallback(() => {
@@ -297,6 +358,37 @@ export const useSIP = (agentName, agentPassword, asteriskIp) => {
         });
     };
 
+    const signalConnected = useCallback(() => {
+        console.log("⚡ Signal Connected triggered!");
+        setCallStatus("connected");
+    }, []);
+
+    const swapCalls = useCallback(() => {
+        if (!session || !heldSessionRef.current) return;
+
+        console.log("Swapping calls...");
+        const currentActive = session;
+        const currentHeld = heldSessionRef.current;
+
+        // 1. Hold the current active call
+        const holdOptions = { sessionDescriptionHandlerOptions: { hold: true } };
+        currentActive.invite(holdOptions)
+            .then(() => {
+                // 2. Unhold the previously held call
+                const unholdOptions = { sessionDescriptionHandlerOptions: { hold: false } };
+                return currentHeld.invite(unholdOptions);
+            })
+            .then(() => {
+                // 3. Swap state
+                setSession(currentHeld);
+                setHeldSession(currentActive);
+                setRemoteIdentity(currentHeld.remoteIdentity?.uri?.user);
+                setIsOnHold(false);
+                setupRemoteMedia(currentHeld);
+            })
+            .catch(err => console.error("Swap failed:", err));
+    }, [session]);
+
     return {
         status,
         callStatus,
@@ -304,10 +396,14 @@ export const useSIP = (agentName, agentPassword, asteriskIp) => {
         answerCall,
         hangup,
         incomingSession,
+        remoteIdentity,
         toggleMute,
         isMuted,
         toggleHold,
         isOnHold,
-        sendDTMF
+        sendDTMF,
+        signalConnected,
+        heldSession,
+        swapCalls
     };
 };

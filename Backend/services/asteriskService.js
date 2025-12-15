@@ -37,7 +37,6 @@ const createAsteriskExtension = (username, password, extension) => {
                 }
 
                 stream.on("close", (code, signal) => {
-                    console.log("Stream :: close :: code: " + code + ", signal: " + signal);
                     conn.end();
 
                     if (code === 0) {
@@ -53,9 +52,16 @@ const createAsteriskExtension = (username, password, extension) => {
                         reject(new Error(`Script exited with code ${code}`));
                     }
                 }).on("data", (data) => {
-                    console.log("STDOUT: " + data);
+                    // Only log extension creation success
+                    if (data.toString().includes("created")) {
+                        console.log("STDOUT: " + data);
+                    }
                 }).stderr.on("data", (data) => {
-                    console.log("STDERR: " + data);
+                    // Only log actual errors, not CLI connection warnings
+                    const stderr = data.toString();
+                    if (!stderr.includes("asterisk.ctl exist")) {
+                        console.log("STDERR: " + data);
+                    }
                 });
             });
         }).on("error", (err) => {

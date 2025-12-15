@@ -19,14 +19,13 @@ import {
 import { useSIP } from "../hooks/useSIP";
 
 // Initialize socket
-const socket = io(
-  "/",
-  {
+const socket = io("/", {
+    path: "/socket.io",
     autoConnect: true,
     reconnection: true,
     reconnectionAttempts: 5,
-  }
-);
+    transports: ["websocket"] // Force WebSocket
+});
 
 export default function Messaging() {
   const [searchParams] = useSearchParams();
@@ -39,6 +38,8 @@ export default function Messaging() {
   const [activeMenu, setActiveMenu] = useState(null);
   const [editingMessage, setEditingMessage] = useState(null);
   const [editText, setEditText] = useState("");
+  const [notifications, setNotifications] = useState([]);
+  const [customAlert, setCustomAlert] = useState(null);
   const agentId = localStorage.getItem("username") || "Guest";
   const sipPassword = localStorage.getItem("sipPassword") || "1234";
   const asteriskIp = "172.20.47.25";
@@ -48,12 +49,71 @@ export default function Messaging() {
   // Initialize SIP for receiving messages
   useSIP(agentId, sipPassword, asteriskIp);
 
-  // Connect socket with agentId
+  // Notification functions
+  const playNotificationSound = () => {
+    // Create a simple notification sound using Web Audio API
+    try {
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+      
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+      
+      oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
+      oscillator.frequency.setValueAtTime(600, audioContext.currentTime + 0.1);
+      
+      gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3);
+      
+      oscillator.start(audioContext.currentTime);
+      oscillator.stop(audioContext.currentTime + 0.3);
+    } catch (error) {
+      console.log("Could not play notification sound:", error);
+    }
+  };
+
+  const showNotification = (from, message) => {
+    const notification = {
+      id: Date.now(),
+      from,
+      message: message.length > 50 ? message.substring(0, 50) + "..." : message,
+      timestamp: new Date(),
+    };
+    
+    setNotifications(prev => [...prev, notification]);
+    
+    // Play notification sound
+    playNotificationSound();
+    
+    // Auto remove notification after 5 seconds
+    setTimeout(() => {
+      setNotifications(prev => prev.filter(n => n.id !== notification.id));
+    }, 5000);
+
+    // Browser notification if permission granted
+    if (Notification.permission === "granted") {
+      new Notification(`New message from ${from}`, {
+        body: message,
+        icon: "/favicon.ico",
+      });
+    }
+  };
+
+  // Removed separate unreadCounts state - using conversation.unread property instead
+
+  // Connect socket with agentId and request notification permission
   useEffect(() => {
     if (agentId) {
       socket.io.opts.query = { agentId };
       socket.connect();
     }
+
+    // Request notification permission
+    if (Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+
     return () => {
       socket.disconnect();
     };
@@ -63,9 +123,9 @@ export default function Messaging() {
   useEffect(() => {
     const handleSipMessage = async (event) => {
       const { from, message, timestamp } = event.detail;
-      console.log("SIP MESSAGE received in chat:", from, message);
+      console.log("SIP MESSAGE received from", from + ":", message);
 
-      // Save to database via API
+      // Save to database via API only - let socket handle UI updates
       try {
         await api.post("/messages", {
           from,
@@ -73,33 +133,17 @@ export default function Messaging() {
           message,
           source: "sip",
         });
+        console.log("SIP message saved to database");
       } catch (err) {
         console.error("Failed to save SIP message:", err);
       }
 
-      // Add to messages if it's from the selected conversation
-      if (selectedConversation === from) {
-        setMessages((prev) => [
-          ...prev,
-          { from, message, timestamp, _id: Date.now() },
-        ]);
-      }
-
-      // Refresh conversations list
-      setConversations((prev) => {
-        const exists = prev.find((c) => c.partner === from);
-        if (!exists) {
-          return [...prev, { partner: from, lastMessage: message }];
-        }
-        return prev.map((c) =>
-          c.partner === from ? { ...c, lastMessage: message } : c
-        );
-      });
+      // Don't add to UI directly - socket will handle this to prevent duplicates
     };
 
     window.addEventListener("sipMessage", handleSipMessage);
     return () => window.removeEventListener("sipMessage", handleSipMessage);
-  }, [selectedConversation]);
+  }, [agentId]);
 
   // Check for agent param from dashboard
   useEffect(() => {
@@ -122,7 +166,22 @@ export default function Messaging() {
     const fetchConversations = async () => {
       try {
         const res = await api.get(`/messages/conversations/${agentId}`);
-        setConversations(res.data || []);
+        const conversations = res.data || [];
+        
+        // Remove duplicates from initial load
+        const uniqueConversations = [];
+        const seenIds = new Set();
+        
+        conversations.forEach(conv => {
+          const id = conv.id || conv.partner || conv.name;
+          if (!seenIds.has(id)) {
+            seenIds.add(id);
+            uniqueConversations.push(conv);
+          }
+        });
+        
+        console.log("Initial conversations loaded:", uniqueConversations);
+        setConversations(uniqueConversations);
       } catch (err) {
         console.error("Failed to fetch conversations", err);
       }
@@ -134,11 +193,19 @@ export default function Messaging() {
   useEffect(() => {
     if (!agentId || !selectedConversation) return;
 
+    // Clear messages when switching conversations
+    setMessages([]);
+    
+    // Don't automatically clear unread count when loading messages
+    // Only clear when user explicitly clicks the conversation
+
     const fetchMessages = async () => {
       try {
+        console.log("Fetching messages for conversation:", selectedConversation);
         const res = await api.get(
           `/messages/${agentId}/${selectedConversation}`
         );
+        console.log("Fetched messages:", res.data);
         setMessages(res.data || []);
       } catch (err) {
         console.error("Failed to fetch messages", err);
@@ -149,16 +216,114 @@ export default function Messaging() {
 
     // Listen for incoming messages
     const handleReceiveMessage = (msg) => {
-      if (
+      // Check if message is for current conversation
+      const isCurrentConversation = (
         msg.from === selectedConversation ||
         msg.to === selectedConversation
-      ) {
+      );
+
+      // Check if message is incoming (not from current user)
+      const isIncomingMessage = msg.from !== agentId;
+
+      if (isCurrentConversation) {
+        console.log("📨 Received message data:", msg);
         setMessages((prev) => {
-          // Prevent duplicates
-          if (prev.some((m) => m._id === msg._id)) return prev;
+          // Enhanced duplicate prevention
+          const isDuplicate = prev.some((m) => {
+            // Check by ID first
+            if (m._id === msg._id) return true;
+            
+            // Check by content, sender, and timestamp (within 2 seconds)
+            if (m.from === msg.from && 
+                m.to === msg.to && 
+                m.message === msg.message &&
+                Math.abs(new Date(m.timestamp) - new Date(msg.timestamp)) < 2000) {
+              return true;
+            }
+            
+            return false;
+          });
+          
+          if (isDuplicate) {
+            console.log("🚫 Duplicate message detected, skipping");
+            return prev;
+          }
+          
+          console.log("✅ Adding new message to conversation");
           return [...prev, msg];
         });
+
+        // Don't automatically mark as read - let user click to read
+      } else if (isIncomingMessage) {
+        // Message from different conversation - show notification
+        showNotification(msg.from, msg.message);
       }
+
+      // Update conversations list with latest message
+      setConversations(prev => {
+        const partnerId = msg.from === agentId ? msg.to : msg.from;
+        
+        console.log("Updating conversation for partner:", partnerId);
+        console.log("Current conversations:", prev.map(c => ({ id: c.id, partner: c.partner, name: c.name })));
+        
+        // Find existing conversation by id, partner, or name
+        const existingIndex = prev.findIndex(c => 
+          c.id === partnerId || 
+          c.partner === partnerId || 
+          c.name === partnerId
+        );
+        
+        console.log("Found existing conversation at index:", existingIndex);
+        
+        let updated = [...prev];
+        
+        if (existingIndex >= 0) {
+          // Remove existing conversation from its current position
+          const existingConv = updated[existingIndex];
+          updated.splice(existingIndex, 1);
+          
+          // Update conversation data
+          const conversationData = {
+            ...existingConv,
+            lastMessage: msg.message,
+            timestamp: msg.timestamp,
+            // Only increment unread count for incoming messages to different conversations
+            unread: isIncomingMessage && !isCurrentConversation 
+              ? (existingConv.unread || 0) + 1 
+              : (existingConv.unread || 0)
+          };
+          
+          // Add updated conversation to the top
+          updated.unshift(conversationData);
+        } else {
+          // New conversation - add at the top
+          const conversationData = {
+            id: partnerId,
+            partner: partnerId,
+            name: partnerId,
+            lastMessage: msg.message,
+            timestamp: msg.timestamp,
+            unread: isIncomingMessage && !isCurrentConversation ? 1 : 0
+          };
+          
+          updated.unshift(conversationData);
+        }
+        
+        // Remove any duplicates that might exist
+        const uniqueConversations = [];
+        const seenIds = new Set();
+        
+        updated.forEach(conv => {
+          const id = conv.id || conv.partner || conv.name;
+          if (!seenIds.has(id)) {
+            seenIds.add(id);
+            uniqueConversations.push(conv);
+          }
+        });
+        
+        console.log("Final conversations after dedup:", uniqueConversations.map(c => ({ id: c.id, partner: c.partner, name: c.name })));
+        return uniqueConversations;
+      });
     };
 
     socket.on("receiveMessage", handleReceiveMessage);
@@ -187,10 +352,8 @@ export default function Messaging() {
       timestamp: new Date().toISOString(),
     };
 
-    // Optimistic update
-    // setMessages((prev) => [...prev, messageData]); // Wait for server ack instead to avoid dupes if we want strict consistency, but optimistic is better UX.
-    // Actually, server sends back "receiveMessage" to sender too, so we can just wait for that or handle deduping.
-    // Let's rely on server response for now to ensure persistence is confirmed.
+    // Optimistic update - add message immediately for sender
+    setMessages((prev) => [...prev, { ...messageData, _id: `temp-${Date.now()}` }]);
 
     socket.emit("sendMessage", {
       to: selectedConversation,
@@ -244,12 +407,139 @@ export default function Messaging() {
   // Delete a message
   const handleDelete = async (msgId) => {
     try {
+      // Check if it's a temporary message (starts with temp-)
+      if (msgId.toString().startsWith('temp-')) {
+        console.log("Deleting temporary message from UI only");
+        setMessages((prev) => prev.filter((m) => m._id !== msgId));
+        setActiveMenu(null);
+        return;
+      }
+
       await api.delete(`/messages/${msgId}`);
       setMessages((prev) => prev.filter((m) => m._id !== msgId));
       setActiveMenu(null);
     } catch (err) {
       console.error("Failed to delete message:", err);
+      
+      // If 404, message doesn't exist in DB, just remove from UI
+      if (err.response?.status === 404) {
+        console.log("Message not found in database, removing from UI");
+        setMessages((prev) => prev.filter((m) => m._id !== msgId));
+        setActiveMenu(null);
+      } else {
+        showCustomAlert("Failed to delete message. Please try again.", 'error');
+      }
     }
+  };
+
+  // Multiple delete functionality
+  const [selectedMessages, setSelectedMessages] = useState(new Set());
+  const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
+
+  const toggleMessageSelection = (msgId) => {
+    setSelectedMessages(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(msgId)) {
+        newSet.delete(msgId);
+      } else {
+        newSet.add(msgId);
+      }
+      return newSet;
+    });
+  };
+
+  const handleMultipleDelete = async () => {
+    if (selectedMessages.size === 0) return;
+
+    showCustomAlert(
+      `Delete ${selectedMessages.size} selected message${selectedMessages.size > 1 ? 's' : ''}?`,
+      'confirm',
+      async () => {
+        await performMultipleDelete();
+        hideCustomAlert();
+      },
+      () => {
+        hideCustomAlert();
+      }
+    );
+  };
+
+  const performMultipleDelete = async () => {
+
+    const messagesToDelete = Array.from(selectedMessages);
+    let successCount = 0;
+    let errorCount = 0;
+
+    for (const msgId of messagesToDelete) {
+      try {
+        // Check if it's a temporary message
+        if (msgId.toString().startsWith('temp-')) {
+          successCount++;
+          continue;
+        }
+
+        await api.delete(`/messages/${msgId}`);
+        successCount++;
+      } catch (err) {
+        console.error(`Failed to delete message ${msgId}:`, err);
+        
+        // If 404, count as success since it's already gone
+        if (err.response?.status === 404) {
+          successCount++;
+        } else {
+          errorCount++;
+        }
+      }
+    }
+
+    // Remove all selected messages from UI
+    setMessages(prev => prev.filter(m => !selectedMessages.has(m._id)));
+    
+    // Reset selection
+    setSelectedMessages(new Set());
+    setIsMultiSelectMode(false);
+
+    // Show result
+    if (errorCount > 0) {
+      showCustomAlert(`Deleted ${successCount} messages. ${errorCount} failed to delete.`, 'error');
+    } else {
+      showSuccessMessage(`Successfully deleted ${successCount} message${successCount > 1 ? 's' : ''}`);
+    }
+  };
+
+  const clearSelection = () => {
+    setSelectedMessages(new Set());
+    setIsMultiSelectMode(false);
+  };
+
+  // Custom alert system
+  const showCustomAlert = (message, type = 'confirm', onConfirm = null, onCancel = null) => {
+    setCustomAlert({
+      message,
+      type, // 'confirm', 'success', 'error'
+      onConfirm,
+      onCancel
+    });
+  };
+
+  const hideCustomAlert = () => {
+    setCustomAlert(null);
+  };
+
+  const showSuccessMessage = (message) => {
+    const notification = {
+      id: Date.now(),
+      message,
+      type: 'success',
+      timestamp: new Date(),
+    };
+    
+    setNotifications(prev => [...prev, notification]);
+    
+    // Auto remove after 3 seconds
+    setTimeout(() => {
+      setNotifications(prev => prev.filter(n => n.id !== notification.id));
+    }, 3000);
   };
 
   const filteredConversations = conversations.filter((conv) =>
@@ -257,11 +547,138 @@ export default function Messaging() {
   );
 
   return (
-    <div className="flex h-full bg-dark-900">
+    <div className="flex h-full bg-dark-900 relative">
+      {/* Notification Display */}
+      {notifications.length > 0 && (
+        <div className="absolute top-4 right-4 z-50 space-y-2">
+          {notifications.map((notification) => (
+            <div
+              key={notification.id}
+              className={`border rounded-lg p-3 shadow-lg animate-slide-in-right max-w-sm ${
+                notification.type === 'success' 
+                  ? 'bg-green-900/50 border-green-500/30' 
+                  : 'bg-dark-700 border-accent-purple/30'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  {notification.type === 'success' ? (
+                    <div className="w-8 h-8 bg-green-500/20 rounded-full flex items-center justify-center">
+                      <Check className="w-4 h-4 text-green-500" />
+                    </div>
+                  ) : (
+                    <div className="w-8 h-8 bg-gradient-to-br from-accent-purple to-accent-blue rounded-full flex items-center justify-center">
+                      <span className="text-white font-bold text-xs">
+                        {notification.from?.[0]?.toUpperCase() || 'M'}
+                      </span>
+                    </div>
+                  )}
+                  <div>
+                    {notification.type === 'success' ? (
+                      <p className="text-green-400 font-medium text-sm">{notification.message}</p>
+                    ) : (
+                      <>
+                        <p className="text-white font-medium text-sm">{notification.from}</p>
+                        <p className="text-gray-300 text-xs">{notification.message}</p>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <button
+                  onClick={() => setNotifications(prev => prev.filter(n => n.id !== notification.id))}
+                  className="text-gray-400 hover:text-white"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Custom Alert Modal */}
+      {customAlert && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-dark-800 border border-white/10 rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl">
+            <div className="flex items-center gap-3 mb-4">
+              {customAlert.type === 'confirm' && (
+                <div className="w-10 h-10 bg-yellow-500/20 rounded-full flex items-center justify-center">
+                  <MessageSquare className="w-5 h-5 text-yellow-500" />
+                </div>
+              )}
+              {customAlert.type === 'success' && (
+                <div className="w-10 h-10 bg-green-500/20 rounded-full flex items-center justify-center">
+                  <Check className="w-5 h-5 text-green-500" />
+                </div>
+              )}
+              {customAlert.type === 'error' && (
+                <div className="w-10 h-10 bg-red-500/20 rounded-full flex items-center justify-center">
+                  <X className="w-5 h-5 text-red-500" />
+                </div>
+              )}
+              <div>
+                <h3 className="text-white font-semibold">
+                  {customAlert.type === 'confirm' && 'Confirm Delete'}
+                  {customAlert.type === 'success' && 'Success'}
+                  {customAlert.type === 'error' && 'Error'}
+                </h3>
+              </div>
+            </div>
+            
+            <p className="text-gray-300 mb-6">{customAlert.message}</p>
+            
+            <div className="flex gap-3 justify-end">
+              {customAlert.type === 'confirm' && (
+                <>
+                  <button
+                    onClick={customAlert.onCancel}
+                    className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition-all"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={customAlert.onConfirm}
+                    className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-all"
+                  >
+                    Delete
+                  </button>
+                </>
+              )}
+              {(customAlert.type === 'success' || customAlert.type === 'error') && (
+                <button
+                  onClick={hideCustomAlert}
+                  className="px-4 py-2 bg-accent-purple hover:bg-accent-purple/80 text-white rounded-lg transition-all"
+                >
+                  OK
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Conversations Sidebar */}
       <div className="w-80 bg-dark-800 border-r border-white/10 flex flex-col">
-        {/* Search */}
+        {/* Header */}
         <div className="p-4 border-b border-white/10">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-lg font-semibold text-white">Messages</h3>
+            {(() => {
+              const totalUnread = conversations.reduce((sum, conv) => sum + (conv.unread || 0), 0);
+              return totalUnread > 0 && (
+                <div className="flex items-center gap-2 px-2 py-1 bg-accent-purple/20 rounded-lg">
+                  <div className="w-2 h-2 bg-accent-purple rounded-full animate-pulse"></div>
+                  <span className="text-accent-purple text-xs font-medium">
+                    {totalUnread} unread
+                  </span>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+
+        {/* Search */}
+        <div className="px-4 pb-4">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-500" />
             <input
@@ -285,7 +702,25 @@ export default function Messaging() {
             filteredConversations.map((conv) => (
               <button
                 key={conv.id}
-                onClick={() => setSelectedConversation(conv.id)}
+                onClick={async () => {
+                  setSelectedConversation(conv.id);
+                  
+                  // Mark messages as read in backend
+                  try {
+                    await api.put(`/messages/mark-read/${agentId}/${conv.id}`);
+                  } catch (err) {
+                    console.error("Failed to mark messages as read:", err);
+                  }
+                  
+                  // Clear unread count in conversation list
+                  setConversations(prev => 
+                    prev.map(c => 
+                      c.id === conv.id 
+                        ? { ...c, unread: 0 }
+                        : c
+                    )
+                  );
+                }}
                 className={`w-full p-4 flex items-center gap-3 hover:bg-dark-700 transition-all border-b border-white/5 ${
                   selectedConversation === conv.id
                     ? "bg-dark-700 border-l-2 border-l-accent-purple"
@@ -310,10 +745,10 @@ export default function Messaging() {
                     {conv.lastMessage}
                   </p>
                 </div>
-                {conv.unread > 0 && (
-                  <div className="w-5 h-5 bg-accent-purple rounded-full flex items-center justify-center">
+                {(conv.unread || 0) > 0 && (
+                  <div className="w-5 h-5 bg-accent-purple rounded-full flex items-center justify-center animate-pulse">
                     <span className="text-xs text-white font-bold">
-                      {conv.unread}
+                      {conv.unread || 0}
                     </span>
                   </div>
                 )}
@@ -345,10 +780,56 @@ export default function Messaging() {
                   </div>
                 </div>
               </div>
+              
+              {/* Multi-select controls */}
+              <div className="flex items-center gap-3">
+                {isMultiSelectMode ? (
+                  <>
+                    {/* Left side - Select All */}
+                    <button
+                      onClick={() => {
+                        const allMessageIds = new Set(messages.map(m => m._id));
+                        setSelectedMessages(allMessageIds);
+                      }}
+                      className="flex items-center gap-2 px-3 py-1 bg-dark-700 hover:bg-dark-600 text-gray-300 text-sm rounded-lg transition-all"
+                    >
+                      <Check size={16} />
+                      Select All
+                    </button>
+                    
+                    {/* Center - Delete */}
+                    <button
+                      onClick={handleMultipleDelete}
+                      disabled={selectedMessages.size === 0}
+                      className="flex items-center gap-2 px-3 py-1 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 text-white text-sm rounded-lg transition-all"
+                    >
+                      <Trash2 size={16} />
+                      Delete ({selectedMessages.size})
+                    </button>
+                    
+                    {/* Right side - Cancel */}
+                    <button
+                      onClick={clearSelection}
+                      className="flex items-center gap-2 px-3 py-1 bg-gray-600 hover:bg-gray-700 text-white text-sm rounded-lg transition-all"
+                    >
+                      <X size={16} />
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    onClick={() => setIsMultiSelectMode(true)}
+                    className="flex items-center gap-2 px-3 py-1 bg-dark-700 hover:bg-dark-600 text-gray-300 text-sm rounded-lg transition-all"
+                    title="Delete multiple messages"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+            <div className="flex-1 overflow-y-auto p-6 space-y-3">
               {messages.length === 0 ? (
                 <div className="text-center text-gray-500 mt-10">
                   <MessageSquare className="w-12 h-12 mx-auto mb-4 opacity-30" />
@@ -363,23 +844,36 @@ export default function Messaging() {
                   return (
                     <div
                       key={msg._id || idx}
-                      className={`flex group ${
+                      className={`flex group mb-4 ${
                         isSender ? "justify-end" : "justify-start"
                       }`}
                     >
+                      {/* Multi-select checkbox */}
+                      {isMultiSelectMode && (
+                        <div className={`flex items-start pt-2 ${isSender ? 'order-2 ml-2' : 'mr-2'}`}>
+                          <input
+                            type="checkbox"
+                            checked={selectedMessages.has(msg._id)}
+                            onChange={() => toggleMessageSelection(msg._id)}
+                            className="w-4 h-4 text-accent-purple bg-dark-700 border-gray-600 rounded focus:ring-accent-purple focus:ring-2"
+                          />
+                        </div>
+                      )}
+                      
                       <div className="relative">
                         {/* Message bubble */}
                         <div
-                          className={`max-w-md px-4 py-3 rounded-2xl ${
+                          className={`max-w-md px-4 py-3 rounded-2xl shadow-sm ${
                             isSender
                               ? "bg-gradient-to-r from-accent-purple to-accent-blue text-white rounded-br-none"
                               : "bg-dark-700 text-gray-100 rounded-bl-none"
                           }`}
+                          style={{ wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}
                         >
                           {!isSender && (
-                            <p className="text-xs font-medium text-accent-purple mb-1">
+                            <div className="text-xs font-medium text-accent-purple mb-2">
                               {msg.from}
-                            </p>
+                            </div>
                           )}
 
                           {isEditing ? (
@@ -405,16 +899,16 @@ export default function Messaging() {
                               </button>
                             </div>
                           ) : (
-                            <p className="text-sm break-words">{msg.message}</p>
+                            <div className="text-sm break-words mb-1">
+                              {msg.message}
+                            </div>
                           )}
 
-                          <span
-                            className={`block text-xs mt-1 ${
+                          <div className={`text-xs ${
                               isSender ? "text-white/70" : "text-gray-500"
-                            }`}
-                          >
+                            }`}>
                             {formatTime(msg.timestamp)}
-                          </span>
+                          </div>
                         </div>
 
                         {/* Action menu button */}

@@ -62,13 +62,7 @@ export default function AdminLayout() {
           ))}
         </nav>
 
-        {/* System Status */}
-        <div className="p-4 border-t border-white/5">
-          <div className="flex items-center gap-2 px-4 py-2 bg-accent-green/10 rounded-xl mb-4">
-            <Activity className="w-4 h-4 text-accent-green" />
-            <span className="text-sm text-accent-green">System Online</span>
-          </div>
-        </div>
+
 
         {/* User section */}
         <div className="p-4 border-t border-white/5">

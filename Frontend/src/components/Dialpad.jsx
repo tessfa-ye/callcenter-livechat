@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Phone, PhoneOff, Delete, Mic, MicOff, Grid, User } from "lucide-react";
 
-export default function Dialpad({ isOpen, onClose, onCall, activeCallStatus, toggleMute, isMuted, sendDTMF, callerId, toggleHold, isOnHold }) {
+export default function Dialpad({ isOpen, onClose, onCall, activeCallStatus, toggleMute, isMuted, sendDTMF, callerId, toggleHold, isOnHold, adminSettings = {}, heldCall, onSwap }) {
   const [number, setNumber] = useState("");
   const [showKeypad, setShowKeypad] = useState(false);
   const [duration, setDuration] = useState(0);
@@ -61,6 +61,23 @@ export default function Dialpad({ isOpen, onClose, onCall, activeCallStatus, tog
                     {activeCallStatus === "connected" ? formatTime(duration) : activeCallStatus === "incoming" ? "Incoming Call..." : "Calling..."}
                 </p>
 
+                {/* Held Call Indicator */}
+                {heldCall && (
+                    <div className="mb-6 px-4 py-2 bg-yellow-500/20 border border-yellow-500/30 rounded-xl flex items-center gap-3 w-full">
+                         <div className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse" />
+                         <div className="flex-1 text-left">
+                            <p className="text-yellow-500 text-xs font-bold uppercase">On Hold</p>
+                            <p className="text-white text-sm">{heldCall.remoteIdentity?.uri?.user || "Unknown"}</p>
+                         </div>
+                         <button 
+                            onClick={onSwap}
+                            className="px-3 py-1 bg-yellow-500 text-black font-bold text-xs rounded-lg hover:bg-yellow-400 transition-colors"
+                         >
+                            Swap
+                         </button>
+                    </div>
+                )}
+
                 <div className="grid grid-cols-3 gap-6 w-full mb-8">
                     <button 
                         onClick={toggleMute}
@@ -86,7 +103,11 @@ export default function Dialpad({ isOpen, onClose, onCall, activeCallStatus, tog
 
                      <button 
                         onClick={toggleHold}
-                        className={`flex flex-col items-center gap-2 ${isOnHold ? "text-white" : "text-gray-400 hover:text-white"}`}
+                        disabled={!adminSettings?.calls?.enableHold}
+                        className={`flex flex-col items-center gap-2 ${
+                          !adminSettings?.calls?.enableHold ? "opacity-50 cursor-not-allowed" :
+                          isOnHold ? "text-white" : "text-gray-400 hover:text-white"
+                        }`}
                      >
                         <div className={`w-14 h-14 rounded-full flex items-center justify-center transition-all ${
                             isOnHold ? "bg-white text-dark-800" : "bg-dark-700"

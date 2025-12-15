@@ -43,10 +43,11 @@ router.get("/conversations/:agentId", async (req, res) => {
 
         conversationsMap.set(partnerId, {
           id: partnerId,
+          partner: partnerId,
           name: partnerId, // Will be updated if user found
           lastMessage: msg.message,
           timestamp: msg.timestamp,
-          unread: 0 // TODO: Implement read status
+          unread: 0 // Will be calculated below
         });
       }
     }
@@ -60,12 +61,21 @@ router.get("/conversations/:agentId", async (req, res) => {
     const userMap = {};
     users.forEach(u => userMap[u.username] = u.username);
 
-    // Update names
-    conversations.forEach(c => {
+    // Update names and calculate unread counts
+    for (const c of conversations) {
       if (userMap[c.id]) {
         c.name = userMap[c.id];
       }
-    });
+
+      // Calculate unread messages (messages from partner to current user that are not read)
+      const unreadCount = await Message.countDocuments({
+        from: c.id,
+        to: agentId,
+        read: { $ne: true } // Messages that are not marked as read
+      });
+
+      c.unread = unreadCount;
+    }
 
     res.json(conversations);
   } catch (err) {
@@ -128,6 +138,33 @@ router.delete("/:id", async (req, res) => {
       return res.status(404).json({ message: "Message not found" });
     }
     res.json({ message: "Message deleted" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// PUT /api/messages/mark-read/:agentId/:partnerId - Mark messages as read
+router.put("/mark-read/:agentId/:partnerId", async (req, res) => {
+  try {
+    const { agentId, partnerId } = req.params;
+
+    // Mark all messages from partnerId to agentId as read
+    const result = await Message.updateMany(
+      {
+        from: partnerId,
+        to: agentId,
+        read: { $ne: true }
+      },
+      {
+        read: true,
+        readAt: new Date()
+      }
+    );
+
+    res.json({
+      message: "Messages marked as read",
+      modifiedCount: result.modifiedCount
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

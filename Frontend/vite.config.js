@@ -9,6 +9,8 @@ export default defineConfig({
     basicSsl()
   ],
   server: {
+    host: '0.0.0.0', // Listen on all network interfaces
+    port: 5173,
     proxy: {
       '/api': {
         target: 'http://172.20.47.19:5000',

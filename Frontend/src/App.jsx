@@ -15,6 +15,7 @@ import AgentProfile from "./pages/AgentProfile";
 // Admin Pages
 import AdminDashboard from "./pages/admin/Dashboard";
 import AgentManagement from "./pages/admin/AgentManagement";
+import AdminSettings from "./pages/admin/Settings";
 
 // Layouts
 import Layout from "./components/Layout";
@@ -68,6 +69,7 @@ function App() {
         >
           <Route path="/admin/dashboard" element={<AdminDashboard />} />
           <Route path="/admin/agents" element={<AgentManagement />} />
+          <Route path="/admin/settings" element={<AdminSettings />} />
         </Route>
 
         {/* Redirects */}

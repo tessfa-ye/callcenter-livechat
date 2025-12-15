@@ -11,7 +11,8 @@ import {
 } from "lucide-react";
 
 export default function QueueMonitor() {
-  const socket = useSocket();
+  const username = localStorage.getItem("username");
+  const socket = useSocket(username);
   const [queueData, setQueueData] = useState({
     callers: [],
     members: [],

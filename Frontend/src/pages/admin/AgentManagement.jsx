@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import api from "../../services/api";
+import { io } from "socket.io-client";
 import {
   Users,
   Plus,
@@ -36,6 +37,29 @@ export default function AgentManagement() {
 
   useEffect(() => {
     fetchAgents();
+    
+    // Setup Socket.IO for real-time agent status updates
+    // Setup Socket.IO for real-time agent status updates
+    const socket = io("/", {
+      path: "/socket.io",
+      query: { agentId: "admin" }
+    });
+
+    // Listen for agent status updates
+    socket.on("agent:status_update", (data) => {
+      console.log("🔄 Agent status update in management:", data);
+      
+      // Update agent status in real-time
+      setAgents(prev => prev.map(agent => 
+        agent.username === data.username 
+          ? { ...agent, status: data.status }
+          : agent
+      ));
+    });
+
+    return () => {
+      socket.disconnect();
+    };
   }, []);
 
   const getAuthHeaders = () => ({
@@ -144,10 +168,26 @@ export default function AgentManagement() {
 
   const getStatusBadge = (status) => {
     const statuses = {
-      available: { class: "badge-available", label: "Available" },
-      busy: { class: "badge-busy", label: "Busy" },
-      away: { class: "badge-away", label: "Away" },
-      offline: { class: "bg-gray-500/20 text-gray-400 border border-gray-500/30", label: "Offline" },
+      available: { 
+        class: "badge-available animate-pulse", 
+        label: "Available",
+        dot: "bg-accent-green"
+      },
+      busy: { 
+        class: "badge-busy", 
+        label: "Busy",
+        dot: "bg-accent-orange"
+      },
+      away: { 
+        class: "badge-away", 
+        label: "Away",
+        dot: "bg-yellow-400"
+      },
+      offline: { 
+        class: "bg-gray-500/20 text-gray-400 border border-gray-500/30", 
+        label: "Offline",
+        dot: "bg-gray-500"
+      },
     };
     return statuses[status] || statuses.offline;
   };
@@ -156,27 +196,45 @@ export default function AgentManagement() {
     <div className="p-6 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-white">Agent Management</h1>
-          <p className="text-gray-400">Add, edit, and manage call center agents</p>
+        <div className="flex items-center gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-white">Agent Management</h1>
+            <p className="text-gray-400">Add, edit, and manage call center agents</p>
+          </div>
+          <div className="flex items-center gap-2 px-3 py-1 bg-accent-green/20 rounded-lg border border-accent-green/30">
+            <div className="w-2 h-2 bg-accent-green rounded-full animate-pulse"></div>
+            <span className="text-accent-green text-sm font-medium">Live Status</span>
+          </div>
         </div>
-        <button onClick={openCreateModal} className="btn-primary flex items-center gap-2">
-          <Plus className="w-5 h-5" />
-          <span>Add Agent</span>
-        </button>
+        <div className="flex items-center gap-3">
+          <button 
+            onClick={fetchAgents}
+            className="btn-secondary flex items-center gap-2"
+            title="Refresh agents"
+          >
+            <RefreshCw className="w-4 h-4" />
+            <span>Refresh</span>
+          </button>
+          <button onClick={openCreateModal} className="btn-primary flex items-center gap-2">
+            <Plus className="w-5 h-5" />
+            <span>Add Agent</span>
+          </button>
+        </div>
       </div>
 
       {/* Search */}
-      <div className="relative max-w-md">
-        <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-500" />
-        <input
-          type="text"
-          placeholder="Search agents..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className="input-field"
-          style={{ paddingLeft: "3rem" }}
-        />
+      <div className="flex items-center justify-end">
+        <div className="relative max-w-md">
+          <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-500" />
+          <input
+            type="text"
+            placeholder="Search agents..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="input-field"
+            style={{ paddingLeft: "3rem" }}
+          />
+        </div>
       </div>
 
       {/* Agents Table */}
@@ -212,12 +270,23 @@ export default function AgentManagement() {
                     <tr key={agent._id} className="border-b border-white/5 hover:bg-dark-700/30 transition-all">
                       <td className="py-4 px-6">
                         <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 bg-gradient-to-br from-accent-purple to-accent-blue rounded-full flex items-center justify-center">
-                            <span className="text-white font-bold text-sm">
-                              {agent.username[0]?.toUpperCase()}
-                            </span>
+                          <div className="relative">
+                            <div className="w-10 h-10 bg-gradient-to-br from-accent-purple to-accent-blue rounded-full flex items-center justify-center">
+                              <span className="text-white font-bold text-sm">
+                                {agent.username[0]?.toUpperCase()}
+                              </span>
+                            </div>
+                            <div className={`absolute -bottom-1 -right-1 w-4 h-4 rounded-full border-2 border-dark-800 ${status.dot}`}></div>
                           </div>
-                          <span className="text-white font-medium">{agent.username}</span>
+                          <div>
+                            <span className="text-white font-medium">{agent.username}</span>
+                            {agent.status !== "offline" && (
+                              <div className="flex items-center gap-1 mt-1">
+                                <div className="w-2 h-2 bg-accent-green rounded-full animate-pulse"></div>
+                                <span className="text-xs text-accent-green">Online</span>
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </td>
                       <td className="py-4 px-6 text-gray-400">{agent.email || "-"}</td>

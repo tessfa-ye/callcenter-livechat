@@ -23,6 +23,7 @@ app.use("/api/auth", require("./routes/authRoutes"));
 app.use("/api/admin", require("./routes/adminRoutes"));
 app.use("/api/calls", require("./routes/callRoutes"));
 app.use("/api/messages", require("./routes/messageRoutes"));
+app.use("/api/settings", require("./routes/settingsRoutes"));
 
 // Test endpoint
 app.get("/", (req, res) => {
@@ -56,7 +57,7 @@ ami.on("managerevent", (event) => {
     const fromExt = from?.match(/sip:(\d+)@/)?.[1] || from;
     const toExt = to?.match(/sip:(\d+)@/)?.[1] || to;
 
-    console.log(`SIP MESSAGE: ${fromExt} -> ${toExt}: ${body}`);
+
 
     // Save to DB
     const newMsg = {
@@ -75,12 +76,25 @@ ami.on("managerevent", (event) => {
 });
 
 // --- Socket.IO messaging ---
-io.on("connection", (socket) => {
+io.on("connection", async (socket) => {
   const { agentId } = socket.handshake.query;
   if (!agentId) return;
 
-  console.log(`Agent ${agentId} connected`);
+  //console.log(`✅ Agent ${agentId} connected (Socket)`);
   socket.join(agentId);
+
+  // Auto-set to 'available' on connection
+  try {
+    const user = await User.findOneAndUpdate({ username: agentId }, { status: "available" });
+    if (user) {
+      // console.log(`📢 Broadcasting online status for ${agentId}`);
+      io.emit("agent:status_update", { username: agentId, status: "available", action: "login" });
+    } else {
+      console.warn(`⚠️ Connected agent ${agentId} not found in DB`);
+    }
+  } catch (err) {
+    console.error("Auto-online error:", err);
+  }
 
   // Handle Status Updates
   socket.on("updateStatus", async ({ status }) => {
@@ -89,7 +103,7 @@ io.on("connection", (socket) => {
       await User.findOneAndUpdate({ username: agentId }, { status });
 
       // Broadcast to all clients
-      io.emit("agent:status_update", { username: agentId, status });
+      io.emit("agent:status_update", { username: agentId, status, action: "update" });
     } catch (err) {
       console.error("Status update error:", err);
     }
@@ -113,9 +127,9 @@ io.on("connection", (socket) => {
         timestamp: new Date(),
       });
 
-      // Send via Socket.IO
+      // Send via Socket.IO to recipient only
       io.to(to).emit("receiveMessage", newMsg);
-      socket.emit("receiveMessage", newMsg); // Send back to sender for confirmation
+      // Don't send back to sender to prevent duplication
 
       // Send via Asterisk SIP MESSAGE (for Zoiper and other SIP phones)
       if (process.env.AMI_HOST) {
@@ -127,19 +141,28 @@ io.on("connection", (socket) => {
           body: message,
         }, (err, response) => {
           if (err) console.log("AMI MessageSend Error:", err.message);
-          else console.log("SIP MESSAGE sent from", agentId, "to:", to);
+          // Sent successfully
         });
       }
     } catch (err) {
       console.error("Message save error:", err);
     }
+    socket.on("call:answered", ({ to }) => {
+      // Relay "Answered" signal to the caller for instant timer sync
+      io.to(to).emit("call:answered", { from: agentId });
+    });
+
   });
 
   socket.on("disconnect", async () => {
-    console.log(`Agent ${agentId} disconnected`);
-    // Optional: Auto-set to offline on disconnect
-    // await User.findOneAndUpdate({ username: agentId }, { status: "offline" });
-    // io.emit("agent:status_update", { username: agentId, status: "offline" });
+    //console.log(`❌ Agent ${agentId} disconnected`);
+    // Auto-set to offline on disconnect
+    try {
+      await User.findOneAndUpdate({ username: agentId }, { status: "offline" });
+      io.emit("agent:status_update", { username: agentId, status: "offline", action: "logout" });
+    } catch (err) {
+      console.error("Auto-offline error:", err);
+    }
   });
 });
 

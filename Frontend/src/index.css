@@ -261,3 +261,20 @@ body {
 .shadow-glow-lg {
   box-shadow: 0 0 40px rgba(139, 92, 246, 0.4);
 }
+
+/* Notification animations */
+@keyframes slide-in-right {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right 0.3s ease-out forwards;
+}
