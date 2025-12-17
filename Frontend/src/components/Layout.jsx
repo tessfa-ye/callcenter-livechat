@@ -11,13 +11,14 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import useSessionTimeout from "../hooks/useSessionTimeout";
-import useSocket from "../hooks/useSocket";
+import useSocket, { disconnectSocket } from "../hooks/useSocket";
 import api from "../services/api";
 
 export default function Layout() {
   const navigate = useNavigate();
   const username = localStorage.getItem("username") || "Agent";
   const [agentStatus, setAgentStatus] = useState("offline");
+  const [unreadMessageCount, setUnreadMessageCount] = useState(0);
   const socket = useSocket(username);
   
   // Settings state from admin
@@ -40,6 +41,35 @@ export default function Layout() {
       
       // Listen for status updates from server
       if (socket) {
+        // Define data fetching functions FIRST
+        const fetchUnreadCount = async () => {
+          try {
+            const token = localStorage.getItem("token");
+            const res = await api.get(`/messages/conversations/${username}`, {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            const conversations = res.data || [];
+            const totalUnread = conversations.reduce((sum, conv) => sum + (conv.unread || 0), 0);
+            setUnreadMessageCount(totalUnread);
+            console.log("📊 Loaded unread count:", totalUnread);
+          } catch (err) {
+            console.error("Failed to fetch unread count:", err);
+          }
+        };
+
+        const fetchCurrentSettings = async () => {
+          try {
+            const token = localStorage.getItem("token");
+            const res = await api.get("/settings", {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            setAdminSettings(res.data);
+          } catch (err) {
+            console.error("Failed to fetch settings:", err);
+          }
+        };
+
+        // NOW set up socket listeners
         socket.on("agent:status_update", (data) => {
           if (data.username === username) {
             setAgentStatus(data.status);
@@ -71,20 +101,26 @@ export default function Layout() {
           }
         });
 
-        // Fetch current settings
-        const fetchCurrentSettings = async () => {
-          try {
-            const token = localStorage.getItem("token");
-            const res = await api.get("/settings", {
-              headers: { Authorization: `Bearer ${token}` },
-            });
-            setAdminSettings(res.data);
-          } catch (err) {
-            console.error("Failed to fetch settings:", err);
+        // Listen for incoming messages to show notification badge
+        socket.on("receiveMessage", (msg) => {
+          // Only count if message is incoming (not from current user)
+          if (msg.from !== username) {
+            // Increment unread count
+            setUnreadMessageCount(prev => prev + 1);
           }
-        };
+        });
 
+        // Listen for messages being marked as read to update badge
+        socket.on("messages:read", () => {
+          // Refetch unread count to get accurate number
+          fetchUnreadCount();
+        });
+
+        // FINALLY, fetch initial data immediately
+        // Don't wait for connection event - socket singleton is already connected
+        console.log("🚀 Fetching initial data for:", username);
         fetchCurrentSettings();
+        fetchUnreadCount();
       }
     }
 
@@ -92,6 +128,8 @@ export default function Layout() {
       if (socket) {
         socket.off("agent:status_update");
         socket.off("settings:updated");
+        socket.off("receiveMessage");
+        socket.off("messages:read");
       }
     };
   }, [username, socket]);
@@ -124,6 +162,10 @@ export default function Layout() {
     localStorage.removeItem("username");
     localStorage.removeItem("role");
     localStorage.removeItem("agent");
+    
+    // Disconnect singleton socket
+    disconnectSocket();
+    
     navigate("/login");
   };
 
@@ -157,12 +199,26 @@ export default function Layout() {
             <NavLink
               key={item.path}
               to={item.path}
+              onClick={() => {
+                // Clear unread count when navigating to messaging
+                if (item.path === "/messaging") {
+                  setUnreadMessageCount(0);
+                }
+              }}
               className={({ isActive }) =>
                 `nav-link ${isActive ? "active" : ""}`
               }
             >
               <item.icon className="w-5 h-5" />
               <span>{item.label}</span>
+              {/* Unread badge for Messaging */}
+              {item.path === "/messaging" && unreadMessageCount > 0 && (
+                <div className="ml-auto w-5 h-5 bg-accent-purple rounded-full flex items-center justify-center animate-pulse">
+                  <span className="text-xs text-white font-bold">
+                    {unreadMessageCount > 9 ? "9+" : unreadMessageCount}
+                  </span>
+                </div>
+              )}
             </NavLink>
           ))}
         </nav>

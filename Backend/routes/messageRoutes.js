@@ -161,6 +161,12 @@ router.put("/mark-read/:agentId/:partnerId", async (req, res) => {
       }
     );
 
+    // Notify client to update UI via Socket.IO
+    const io = req.app.get("io");
+    if (io) {
+      io.to(agentId).emit("messages:read", { partnerId });
+    }
+
     res.json({
       message: "Messages marked as read",
       modifiedCount: result.modifiedCount

@@ -81,7 +81,8 @@ export default function Messaging() {
       timestamp: new Date(),
     };
     
-    setNotifications(prev => [...prev, notification]);
+    
+    setNotifications(prev => [notification, ...prev]);
     
     // Play notification sound
     playNotificationSound();
@@ -99,8 +100,6 @@ export default function Messaging() {
       });
     }
   };
-
-  // Removed separate unreadCounts state - using conversation.unread property instead
 
   // Connect socket with agentId and request notification permission
   useEffect(() => {
@@ -122,10 +121,12 @@ export default function Messaging() {
   // Listen for SIP MESSAGE from Zoiper
   useEffect(() => {
     const handleSipMessage = async (event) => {
-      const { from, message, timestamp } = event.detail;
+      const { from, message } = event.detail;
       console.log("SIP MESSAGE received from", from + ":", message);
 
-      // Save to database via API only - let socket handle UI updates
+      // DUPLICATE FIX: Server AMI already captures 'MessageEntry' and saves to DB.
+      // We do NOT need to save it again here.
+      /*
       try {
         await api.post("/messages", {
           from,
@@ -137,6 +138,7 @@ export default function Messaging() {
       } catch (err) {
         console.error("Failed to save SIP message:", err);
       }
+      */
 
       // Don't add to UI directly - socket will handle this to prevent duplicates
     };
@@ -228,32 +230,42 @@ export default function Messaging() {
       if (isCurrentConversation) {
         console.log("📨 Received message data:", msg);
         setMessages((prev) => {
-          // Enhanced duplicate prevention
-          const isDuplicate = prev.some((m) => {
-            // Check by ID first
-            if (m._id === msg._id) return true;
+          // Check if we have a temporary message that matches this incoming one
+          const tempMessageIndex = prev.findIndex((m) => {
+            if (!m._id.toString().startsWith('temp-')) return false;
             
-            // Check by content, sender, and timestamp (within 2 seconds)
-            if (m.from === msg.from && 
-                m.to === msg.to && 
-                m.message === msg.message &&
-                Math.abs(new Date(m.timestamp) - new Date(msg.timestamp)) < 2000) {
-              return true;
-            }
-            
-            return false;
+             // Check by content, sender, and timestamp (relaxed window)
+            return (
+              m.from === msg.from && 
+              m.to === msg.to && 
+              m.message === msg.message
+            );
           });
           
+          if (tempMessageIndex !== -1) {
+            console.log("♻️ Replacing temp message with confirmed message");
+            const newMessages = [...prev];
+            newMessages[tempMessageIndex] = msg; // Replace temp with real
+            return newMessages;
+          }
+
+          // Check if we already have this exact real message (by ID)
+          const isDuplicate = prev.some(m => m._id === msg._id);
           if (isDuplicate) {
-            console.log("🚫 Duplicate message detected, skipping");
-            return prev;
+             console.log("🚫 Duplicate message detected (ID match), skipping");
+             return prev;
           }
           
           console.log("✅ Adding new message to conversation");
           return [...prev, msg];
         });
 
-        // Don't automatically mark as read - let user click to read
+        // Auto-mark as read if this is an incoming message in the current conversation
+        if (isIncomingMessage) {
+          // Mark this message as read immediately since user is viewing it
+          api.put(`/messages/mark-read/${agentId}/${selectedConversation}`)
+            .catch(err => console.error("Failed to auto-mark message as read:", err));
+        }
       } else if (isIncomingMessage) {
         // Message from different conversation - show notification
         showNotification(msg.from, msg.message);
@@ -287,10 +299,10 @@ export default function Messaging() {
             ...existingConv,
             lastMessage: msg.message,
             timestamp: msg.timestamp,
-            // Only increment unread count for incoming messages to different conversations
-            unread: isIncomingMessage && !isCurrentConversation 
-              ? (existingConv.unread || 0) + 1 
-              : (existingConv.unread || 0)
+            // Set unread to 0 if this is the current conversation, otherwise increment for incoming messages
+            unread: isCurrentConversation 
+              ? 0 
+              : (isIncomingMessage ? (existingConv.unread || 0) + 1 : (existingConv.unread || 0))
           };
           
           // Add updated conversation to the top
@@ -334,10 +346,22 @@ export default function Messaging() {
 
     socket.on("stopTyping", () => setIsTyping(false));
 
+    socket.on("messages:read", ({ partnerId }) => {
+      console.log("Marking messages as read for:", partnerId);
+      setConversations(prev => 
+        prev.map(c => 
+          (c.id === partnerId || c.partner === partnerId || c.name === partnerId)
+            ? { ...c, unread: 0 }
+            : c
+        )
+      );
+    });
+
     return () => {
       socket.off("receiveMessage", handleReceiveMessage);
       socket.off("typing");
       socket.off("stopTyping");
+      socket.off("messages:read");
     };
   }, [agentId, selectedConversation]);
 

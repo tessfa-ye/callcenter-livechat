@@ -52,7 +52,9 @@ export const useSIP = (agentName, agentPassword, asteriskIp) => {
 
         // SIP Configuration
         const sipUri = `sip:${agentName}@${asteriskIp}`;
-        const wssUrl = `wss://${asteriskIp}:8089/ws`;
+        // Use Vite Proxy to avoid SSL issues (connects to local /asterisk -> proxies to wss://asteriskIp:8089/ws)
+        const wssUrl = `wss://${window.location.host}/asterisk`;
+        // const wssUrl = `wss://${asteriskIp}:8089/ws`; // OLD: Direct connection (blocked by browser if no cert)
 
         const uri = UserAgent.makeURI(sipUri);
         if (!uri) {

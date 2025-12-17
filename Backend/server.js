@@ -36,6 +36,9 @@ const io = new Server(server, {
   cors: { origin: "*" },
 });
 
+// Make io accessible to routes
+app.set("io", io);
+
 // --- Asterisk AMI connection ---
 const ami = new AsteriskManager(
   process.env.AMI_PORT,
@@ -48,6 +51,7 @@ const ami = new AsteriskManager(
 ami.keepConnected();
 
 ami.on("managerevent", (event) => {
+  // console.log("Asterisk Event:", event);
   // Broadcast all Asterisk events to frontend
   io.emit("asterisk-event", event);
 
@@ -73,6 +77,27 @@ ami.on("managerevent", (event) => {
       io.to(toExt).emit("receiveMessage", savedMsg);
     }).catch(err => console.error("SIP Message save error:", err));
   }
+
+  // Handle UserEvent for SIP MESSAGE (from Zoiper via dialplan)
+  if (event.event === "UserEvent" && event.userevent === "SIPMessage") {
+    const { from, to, body } = event;
+    // console.log(`📨 UserEvent SIPMessage: from=${from}, to=${to}, body=${body}`);
+
+    // Save to DB
+    const newMsg = {
+      from: from,
+      to: to,
+      message: body,
+      timestamp: new Date(),
+      source: "sip"
+    };
+
+    Message.create(newMsg).then((savedMsg) => {
+      // console.log(`✅ Saved Zoiper message to DB, broadcasting to ${to}`);
+      // Send to target agent if connected via Socket.IO
+      io.to(to).emit("receiveMessage", savedMsg);
+    }).catch(err => console.error("UserEvent SIP Message save error:", err));
+  }
 });
 
 // --- Socket.IO messaging ---
@@ -80,7 +105,7 @@ io.on("connection", async (socket) => {
   const { agentId } = socket.handshake.query;
   if (!agentId) return;
 
-  //console.log(`✅ Agent ${agentId} connected (Socket)`);
+  // console.log(`✅ Agent ${agentId} connected (Socket)`);
   socket.join(agentId);
 
   // Auto-set to 'available' on connection

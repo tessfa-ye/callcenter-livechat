@@ -22,6 +22,14 @@ export default defineConfig({
         changeOrigin: true,
         ws: true,
         secure: false,
+      },
+      // Proxy Asterisk WSS to avoid SSL/Mixed Content issues
+      '/asterisk': {
+        target: 'https://172.20.47.25:8089',
+        changeOrigin: true,
+        ws: true,
+        secure: false,
+        rewrite: (path) => path.replace(/^\/asterisk/, '/ws')
       }
     }
   }
